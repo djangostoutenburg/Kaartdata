@@ -4,6 +4,9 @@ Eenvoudige webtool om kaarten te maken voor **projecten** en **assets**: teken p
 
 ## Starten
 
+Online: **https://djangostoutenburg.github.io/Kaartdata/**
+
+
 Geen installatie of server nodig: open `index.html` in je browser.
 Je kunt de map ook hosten via GitHub Pages (Settings → Pages → branch kiezen) zodat je hem online kunt gebruiken.
 
