@@ -1,0 +1,736 @@
+/* Kaartdata – kaarten maken voor projecten en assets. */
+(function () {
+  'use strict';
+
+  const $ = (sel) => document.querySelector(sel);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  const DEFAULT_CATEGORIES = [
+    'Projectgebied', 'Perceel', 'Bouwvlak', 'Werkterrein', 'Gebouw', 'Groen', 'Verharding', 'Water',
+    'Kabel', 'Leiding', 'Riolering', 'Weg', 'Route', 'Hek',
+    'Lantaarnpaal', 'Boom', 'Put', 'Kast', 'Bord', 'Meetpunt', 'Overig',
+  ];
+
+  const SHAPE_LABEL = { Polygon: 'Polygoon', Rectangle: 'Rechthoek', Line: 'Lijn', Marker: 'Punt', Circle: 'Cirkel' };
+
+  // ---------------------------------------------------------------- Kaart
+  const map = L.map('map', { zoomControl: true, doubleClickZoom: false }).setView([52.1, 5.3], 8);
+
+  const pdok = (layer) => L.tileLayer(
+    `https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/${layer}/EPSG:3857/{z}/{x}/{y}.png`,
+    { maxZoom: 19, maxNativeZoom: 19, attribution: 'Kaartgegevens &copy; <a href="https://www.kadaster.nl">Kadaster</a> / PDOK' });
+
+  const baseLayers = {
+    'PDOK Standaard': pdok('standaard'),
+    'PDOK Grijs': pdok('grijs'),
+    'PDOK Pastel': pdok('pastel'),
+    'Luchtfoto (PDOK)': L.tileLayer(
+      'https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg',
+      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Luchtfoto &copy; Beeldmateriaal.nl / PDOK' }),
+    'OpenStreetMap': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }),
+  };
+  const overlays = {
+    'Kadastrale percelen': L.tileLayer.wms('https://service.pdok.nl/kadaster/kadastralekaart/wms/v5_0', {
+      layers: 'Kadastralekaart', format: 'image/png', transparent: true, minZoom: 16, maxZoom: 21,
+      attribution: 'Kadastrale kaart &copy; Kadaster',
+    }),
+  };
+
+  const savedBase = Store.state.baseLayer && baseLayers[Store.state.baseLayer] ? Store.state.baseLayer : 'PDOK Standaard';
+  baseLayers[savedBase].addTo(map);
+  L.control.layers(baseLayers, overlays, { position: 'topright' }).addTo(map);
+  L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
+  map.on('baselayerchange', (e) => { Store.state.baseLayer = e.name; Store.save(); });
+
+  if (Store.state.view) map.setView(Store.state.view.center, Store.state.view.zoom);
+  map.on('moveend', () => {
+    Store.state.view = { center: map.getCenter(), zoom: map.getZoom() };
+    Store.save();
+  });
+
+  // Geoman: alleen de bewerk-knoppen op de kaart; tekenen gaat via de zijbalk.
+  map.pm.setLang('nl');
+  map.pm.addControls({
+    position: 'topleft',
+    drawMarker: false, drawCircleMarker: false, drawPolyline: false, drawRectangle: false,
+    drawPolygon: false, drawCircle: false, drawText: false,
+    editMode: true, dragMode: true, cutPolygon: true, removalMode: true, rotateMode: true,
+  });
+  map.pm.setGlobalOptions({ snappable: true, snapDistance: 15, allowSelfIntersection: false });
+
+  const featureLayers = new Map(); // featureId -> Leaflet-laag
+  const group = L.featureGroup().addTo(map);
+  let selectedId = null;
+  let showLabels = true;
+
+  // ---------------------------------------------------------------- Stijlen
+  function colorOf(f) {
+    return f.props.color || Store.project(f.projectId)?.color || '#2563eb';
+  }
+
+  function pinIcon(color, selected) {
+    const size = selected ? 34 : 28;
+    return L.divIcon({
+      className: 'asset-pin',
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size],
+      tooltipAnchor: [0, -size],
+      html: `<svg viewBox="0 0 24 24" width="${size}" height="${size}"><path fill="${esc(color)}" stroke="#fff" stroke-width="1.5" d="M12 1.5a7.5 7.5 0 0 0-7.5 7.5c0 5.6 7.5 13.5 7.5 13.5s7.5-7.9 7.5-13.5A7.5 7.5 0 0 0 12 1.5z"/><circle cx="12" cy="9" r="2.8" fill="#fff"/></svg>`,
+    });
+  }
+
+  function styleFor(f, selected) {
+    const color = colorOf(f);
+    const isLine = f.geometry.type.includes('LineString');
+    return {
+      color,
+      weight: selected ? 5 : (isLine ? 4 : 2),
+      opacity: 1,
+      fillColor: color,
+      fillOpacity: f.props.kind === 'asset' ? 0.45 : 0.2,
+      dashArray: f.props.status === 'Gepland' && !isLine ? '6 4' : null,
+    };
+  }
+
+  function applyStyle(f) {
+    const layer = featureLayers.get(f.id);
+    if (!layer) return;
+    const selected = f.id === selectedId;
+    if (layer instanceof L.Marker) layer.setIcon(pinIcon(colorOf(f), selected));
+    else layer.setStyle(styleFor(f, selected));
+    layer.unbindTooltip();
+    if (showLabels && f.props.name) {
+      layer.bindTooltip(esc(f.props.name), {
+        permanent: true, direction: layer instanceof L.Marker ? 'top' : 'center', className: 'feature-label',
+      });
+    } else {
+      layer.bindTooltip(esc(f.props.name || ''), { direction: 'top', sticky: true });
+    }
+  }
+
+  // ---------------------------------------------------------------- Geometrie
+  function layerToGeometry(layer, shape) {
+    if (layer instanceof L.Circle) {
+      const c = layer.getLatLng();
+      return { geometry: { type: 'Point', coordinates: [c.lng, c.lat] }, radius: layer.getRadius() };
+    }
+    return { geometry: layer.toGeoJSON().geometry };
+  }
+
+  function featureToLayer(f) {
+    if (f.shape === 'Circle' && f.radius) {
+      const [lng, lat] = f.geometry.coordinates;
+      return L.circle([lat, lng], { radius: f.radius });
+    }
+    if (f.geometry.type === 'Point') {
+      const [lng, lat] = f.geometry.coordinates;
+      return L.marker([lat, lng], { icon: pinIcon(colorOf(f)) });
+    }
+    return L.GeoJSON.geometryToLayer({ type: 'Feature', geometry: f.geometry, properties: {} });
+  }
+
+  function measure(f) {
+    const g = f.geometry;
+    const out = {};
+    try {
+      if (f.shape === 'Circle' && f.radius) {
+        out.area = Math.PI * f.radius ** 2;
+        out.perimeter = 2 * Math.PI * f.radius;
+        out.radius = f.radius;
+      } else if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+        out.area = turf.area(g);
+        out.perimeter = turf.length(turf.polygonToLine(g), { units: 'meters' });
+      } else if (g.type === 'LineString' || g.type === 'MultiLineString') {
+        out.length = turf.length(g, { units: 'meters' });
+      }
+    } catch (e) { /* ongeldige geometrie */ }
+    return out;
+  }
+
+  const nf = (n, d = 0) => n.toLocaleString('nl-NL', { maximumFractionDigits: d, minimumFractionDigits: d });
+  const fmtArea = (m2) => m2 >= 10000 ? `${nf(m2 / 10000, 2)} ha (${nf(m2)} m²)` : `${nf(m2, 1)} m²`;
+  const fmtLen = (m) => m >= 1000 ? `${nf(m / 1000, 2)} km` : `${nf(m, 1)} m`;
+
+  function measureText(f, short) {
+    const m = measure(f);
+    if (short) {
+      if (m.area != null) return fmtArea(m.area).split(' (')[0];
+      if (m.length != null) return fmtLen(m.length);
+      return '';
+    }
+    const rows = [];
+    if (m.area != null) rows.push(`<b>Oppervlakte:</b> ${fmtArea(m.area)}`);
+    if (m.perimeter != null) rows.push(`<b>Omtrek:</b> ${fmtLen(m.perimeter)}`);
+    if (m.radius != null) rows.push(`<b>Straal:</b> ${fmtLen(m.radius)}`);
+    if (m.length != null) rows.push(`<b>Lengte:</b> ${fmtLen(m.length)}`);
+    return rows.join('<br>');
+  }
+
+  // ---------------------------------------------------------------- Lagen
+  function attachLayer(f) {
+    const layer = featureToLayer(f);
+    layer.featureId = f.id;
+    layer.addTo(group);
+    featureLayers.set(f.id, layer);
+    wireLayer(layer);
+    applyStyle(f);
+    return layer;
+  }
+
+  function wireLayer(layer) {
+    layer.on('click', (e) => {
+      if (map.pm.globalRemovalModeEnabled && map.pm.globalRemovalModeEnabled()) return;
+      L.DomEvent.stopPropagation(e);
+      select(layer.featureId);
+    });
+    const persist = () => {
+      const f = Store.feature(layer.featureId);
+      if (!f) return;
+      Store.updateFeature(f.id, layerToGeometry(layer, f.shape));
+      if (f.id === selectedId) renderMeasure(f);
+      renderList();
+    };
+    layer.on('pm:edit pm:dragend pm:rotateend', persist);
+  }
+
+  function renderLayers() {
+    group.clearLayers();
+    featureLayers.clear();
+    const p = Store.activeProject();
+    if (!p) return;
+    Store.features(p.id).forEach(attachLayer);
+  }
+
+  // Nieuw getekend object
+  map.on('pm:create', (e) => {
+    const p = Store.activeProject();
+    if (!p) { e.layer.remove(); return; }
+    const shape = e.shape;
+    const count = Store.features(p.id).length + 1;
+    const kind = shape === 'Marker' || shape === 'Line' ? 'asset' : 'gebied';
+    const f = Store.addFeature({
+      projectId: p.id,
+      shape,
+      ...layerToGeometry(e.layer, shape),
+      props: {
+        name: `${SHAPE_LABEL[shape] || shape} ${count}`,
+        kind,
+        category: shape === 'Marker' ? 'Overig' : shape === 'Line' ? 'Kabel' : 'Projectgebied',
+        status: 'Gepland',
+        ref: '',
+        notes: '',
+        color: p.color,
+      },
+    });
+    e.layer.remove();          // vervangen door onze eigen laag
+    attachLayer(f);
+    setDrawButton(null);
+    renderList();
+    select(f.id, { focusName: true });
+  });
+
+  map.on('pm:remove', (e) => {
+    const id = e.layer.featureId;
+    if (!id) return;
+    Store.deleteFeature(id);
+    featureLayers.delete(id);
+    if (selectedId === id) closePanel();
+    renderList();
+    toast('Object verwijderd');
+  });
+
+  map.on('pm:cut', (e) => {
+    const id = e.originalLayer?.featureId;
+    if (!id) return;
+    const f = Store.feature(id);
+    e.layer.remove();
+    if (!e.layer.getLatLngs || e.layer.getLatLngs().flat(Infinity).length === 0) {
+      Store.deleteFeature(id);
+    } else {
+      Store.updateFeature(id, { geometry: e.layer.toGeoJSON().geometry, shape: f.shape === 'Rectangle' ? 'Polygon' : f.shape });
+    }
+    renderLayers();
+    renderList();
+    if (selectedId === id) select(id);
+  });
+
+  map.on('click', () => { if (!map.pm.globalDrawModeEnabled()) closePanel(); });
+
+  // ---------------------------------------------------------------- Tekenknoppen
+  const drawButtons = document.querySelectorAll('[data-draw]');
+  function setDrawButton(shape) {
+    drawButtons.forEach(b => b.classList.toggle('active', b.dataset.draw === shape));
+  }
+  drawButtons.forEach(btn => btn.addEventListener('click', () => {
+    if (!Store.activeProject()) { toast('Maak eerst een project aan'); return; }
+    const shape = btn.dataset.draw;
+    if (map.pm.Draw[shape]?.enabled()) { map.pm.disableDraw(); setDrawButton(null); return; }
+    const color = Store.activeProject().color;
+    map.pm.enableDraw(shape, {
+      pathOptions: { color, fillColor: color, fillOpacity: 0.2 },
+      templineStyle: { color },
+      hintlineStyle: { color, dashArray: '5 5' },
+      markerStyle: { icon: pinIcon(color) },
+      continueDrawing: false,
+    });
+    setDrawButton(shape);
+  }));
+  map.on('pm:drawend', () => setDrawButton(null));
+  $('#cancelDraw').addEventListener('click', () => { map.pm.disableDraw(); setDrawButton(null); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { map.pm.disableDraw(); setDrawButton(null); }
+  });
+
+  // ---------------------------------------------------------------- Projecten
+  const projectSelect = $('#projectSelect');
+
+  function renderProjects() {
+    const projects = Store.projects();
+    projectSelect.innerHTML = projects.map(p =>
+      `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+    projectSelect.value = Store.state.activeProjectId || '';
+    const p = Store.activeProject();
+    $('#projectMeta').innerHTML = p
+      ? [p.client && `Opdrachtgever: ${esc(p.client)}`, p.description && esc(p.description)].filter(Boolean).join('<br>')
+      : 'Nog geen project. Klik op “+ Nieuw”.';
+  }
+
+  projectSelect.addEventListener('change', () => {
+    Store.setActive(projectSelect.value);
+    closePanel();
+    refreshAll();
+    zoomToProject();
+  });
+
+  const projectDialog = $('#projectDialog');
+  const projectForm = $('#projectForm');
+  let editingProjectId = null;
+
+  function openProjectDialog(project) {
+    editingProjectId = project?.id ?? null;
+    $('#projectDialogTitle').textContent = project ? 'Project bewerken' : 'Nieuw project';
+    projectForm.reset();
+    if (project) {
+      projectForm.name.value = project.name || '';
+      projectForm.client.value = project.client || '';
+      projectForm.description.value = project.description || '';
+      projectForm.color.value = project.color || '#2563eb';
+    }
+    projectDialog.showModal();
+    projectForm.name.focus();
+  }
+
+  projectDialog.addEventListener('close', () => {
+    if (projectDialog.returnValue !== 'ok') return;
+    const data = {
+      name: projectForm.name.value.trim() || 'Naamloos project',
+      client: projectForm.client.value.trim(),
+      description: projectForm.description.value.trim(),
+      color: projectForm.color.value,
+    };
+    if (editingProjectId) {
+      Store.updateProject(editingProjectId, data);
+      toast('Project bijgewerkt');
+    } else {
+      Store.addProject(data);
+      toast('Project aangemaakt');
+    }
+    closePanel();
+    refreshAll();
+  });
+
+  $('#newProject').addEventListener('click', () => openProjectDialog(null));
+  $('#editProject').addEventListener('click', () => {
+    const p = Store.activeProject();
+    if (p) openProjectDialog(p);
+  });
+  $('#deleteProject').addEventListener('click', () => {
+    const p = Store.activeProject();
+    if (!p) return;
+    const n = Store.features(p.id).length;
+    if (!confirm(`Project “${p.name}” en ${n} object(en) definitief verwijderen?`)) return;
+    Store.deleteProject(p.id);
+    closePanel();
+    refreshAll();
+    toast('Project verwijderd');
+  });
+
+  function zoomToProject() {
+    const b = group.getBounds();
+    if (b.isValid()) map.fitBounds(b, { padding: [40, 40], maxZoom: 18 });
+  }
+
+  // ---------------------------------------------------------------- Lijst
+  const listEl = $('#featureList');
+
+  function renderList() {
+    const p = Store.activeProject();
+    const q = $('#search').value.trim().toLowerCase();
+    const type = $('#typeFilter').value;
+    const all = p ? Store.features(p.id) : [];
+    const items = all.filter(f => {
+      if (type && f.props.kind !== type) return false;
+      if (!q) return true;
+      return [f.props.name, f.props.category, f.props.notes, f.props.ref, f.props.status]
+        .some(v => String(v || '').toLowerCase().includes(q));
+    });
+    $('#featureCount').textContent = all.length;
+    if (!items.length) {
+      listEl.innerHTML = `<li class="empty">${all.length ? 'Geen resultaten.' : 'Nog geen objecten. Teken een polygoon of plaats een punt.'}</li>`;
+      return;
+    }
+    listEl.innerHTML = items.map(f => `
+      <li data-id="${esc(f.id)}" class="${f.id === selectedId ? 'selected' : ''}">
+        <span class="swatch" style="background:${esc(colorOf(f))}"></span>
+        <span class="info">
+          <div class="name">${esc(f.props.name || '(naamloos)')}</div>
+          <div class="sub">${esc([f.props.category, f.props.status, measureText(f, true)].filter(Boolean).join(' · '))}</div>
+        </span>
+      </li>`).join('');
+  }
+
+  listEl.addEventListener('click', (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    select(li.dataset.id);
+    zoomTo(li.dataset.id);
+  });
+  $('#search').addEventListener('input', renderList);
+  $('#typeFilter').addEventListener('change', renderList);
+
+  // ---------------------------------------------------------------- Eigenschappenpaneel
+  const panel = $('#panel');
+  const form = $('#featureForm');
+
+  function select(id, opts = {}) {
+    const prev = selectedId;
+    selectedId = id;
+    if (prev && prev !== id) {
+      const pf = Store.feature(prev);
+      if (pf) applyStyle(pf);
+      featureLayers.get(prev)?.pm?.disable();
+    }
+    const f = Store.feature(id);
+    if (!f) return closePanel();
+    applyStyle(f);
+    featureLayers.get(id)?.bringToFront?.();
+
+    form.name.value = f.props.name || '';
+    form.kind.value = f.props.kind || 'gebied';
+    form.category.value = f.props.category || '';
+    form.status.value = f.props.status || 'Gepland';
+    form.ref.value = f.props.ref || '';
+    form.notes.value = f.props.notes || '';
+    form.color.value = colorOf(f);
+    $('#panelTitle').textContent = `${SHAPE_LABEL[f.shape] || f.geometry.type}`;
+    renderMeasure(f);
+    panel.hidden = false;
+    map.invalidateSize();
+    renderList();
+    if (opts.focusName) { form.name.focus(); form.name.select(); }
+  }
+
+  function renderMeasure(f) {
+    $('#measure').innerHTML = measureText(f);
+    let c;
+    try { c = turf.centroid(f.geometry).geometry.coordinates; } catch (e) { c = null; }
+    $('#coords').textContent = c ? `Middelpunt: ${c[1].toFixed(6)}, ${c[0].toFixed(6)} (WGS84)` : '';
+  }
+
+  function closePanel() {
+    if (selectedId) {
+      featureLayers.get(selectedId)?.pm?.disable();
+      const f = Store.feature(selectedId);
+      selectedId = null;
+      if (f) applyStyle(f);
+    }
+    if (!panel.hidden) { panel.hidden = true; map.invalidateSize(); }
+    renderList();
+  }
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const f = Store.feature(selectedId);
+    if (!f) return;
+    Store.updateFeature(f.id, {
+      props: {
+        ...f.props,
+        name: form.name.value.trim(),
+        kind: form.kind.value,
+        category: form.category.value.trim(),
+        status: form.status.value,
+        ref: form.ref.value.trim(),
+        notes: form.notes.value,
+        color: form.color.value,
+      },
+    });
+    applyStyle(f);
+    renderList();
+    renderCategories();
+    toast('Opgeslagen');
+  });
+  // Kleur direct tonen tijdens kiezen
+  form.color.addEventListener('input', () => {
+    const f = Store.feature(selectedId);
+    if (!f) return;
+    f.props.color = form.color.value;
+    applyStyle(f);
+  });
+
+  $('#closePanel').addEventListener('click', closePanel);
+  $('#zoomFeature').addEventListener('click', () => zoomTo(selectedId));
+  $('#deleteFeature').addEventListener('click', () => {
+    const f = Store.feature(selectedId);
+    if (!f || !confirm(`“${f.props.name}” verwijderen?`)) return;
+    featureLayers.get(f.id)?.remove();
+    featureLayers.delete(f.id);
+    Store.deleteFeature(f.id);
+    closePanel();
+    toast('Object verwijderd');
+  });
+  $('#editShape').addEventListener('click', () => {
+    const layer = featureLayers.get(selectedId);
+    if (!layer) return;
+    if (layer.pm.enabled()) { layer.pm.disable(); toast('Bewerken gestopt'); }
+    else {
+      layer.pm.enable({ allowSelfIntersection: false, draggable: true });
+      toast(layer instanceof L.Marker ? 'Sleep het punt naar de nieuwe plek' : 'Sleep de hoekpunten; klik rechts op een punt om het te verwijderen');
+    }
+  });
+
+  function zoomTo(id) {
+    const layer = featureLayers.get(id);
+    if (!layer) return;
+    if (layer.getBounds) map.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 19 });
+    else map.setView(layer.getLatLng(), Math.max(map.getZoom(), 18));
+  }
+
+  function renderCategories() {
+    const used = Store.state.features.map(f => f.props.category).filter(Boolean);
+    const cats = [...new Set([...DEFAULT_CATEGORIES, ...used])].sort((a, b) => a.localeCompare(b, 'nl'));
+    $('#categoryList').innerHTML = cats.map(c => `<option value="${esc(c)}">`).join('');
+  }
+
+  // ---------------------------------------------------------------- Import / export
+  function download(filename, content, type) {
+    const blob = new Blob([content], { type });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  const slug = (s) => String(s || 'project').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project';
+
+  function projectGeoJSON(p) {
+    return {
+      type: 'FeatureCollection',
+      name: p.name,
+      metadata: { project: p.name, client: p.client || '', description: p.description || '', exported: new Date().toISOString() },
+      features: Store.features(p.id).map(f => {
+        const m = measure(f);
+        return {
+          type: 'Feature',
+          id: f.id,
+          geometry: f.geometry,
+          properties: {
+            ...f.props,
+            shape: f.shape,
+            ...(f.radius ? { radius: f.radius } : {}),
+            ...(m.area != null ? { area_m2: Math.round(m.area * 100) / 100 } : {}),
+            ...(m.length != null ? { length_m: Math.round(m.length * 100) / 100 } : {}),
+          },
+        };
+      }),
+    };
+  }
+
+  $('#exportProject').addEventListener('click', () => {
+    const p = Store.activeProject();
+    if (!p) return toast('Geen project geselecteerd');
+    download(`${slug(p.name)}.geojson`, JSON.stringify(projectGeoJSON(p), null, 2), 'application/geo+json');
+  });
+
+  $('#exportCsv').addEventListener('click', () => {
+    const p = Store.activeProject();
+    if (!p) return toast('Geen project geselecteerd');
+    const cols = ['naam', 'soort', 'categorie', 'status', 'kenmerk', 'vorm', 'oppervlakte_m2', 'lengte_m', 'lat', 'lon', 'notities'];
+    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = Store.features(p.id).map(f => {
+      const m = measure(f);
+      let c = ['', ''];
+      try { c = turf.centroid(f.geometry).geometry.coordinates; } catch (e) { /* */ }
+      return [f.props.name, f.props.kind, f.props.category, f.props.status, f.props.ref, SHAPE_LABEL[f.shape] || f.shape,
+        m.area != null ? m.area.toFixed(2) : '', m.length != null ? m.length.toFixed(2) : '',
+        c[1] !== '' ? Number(c[1]).toFixed(7) : '', c[0] !== '' ? Number(c[0]).toFixed(7) : '', f.props.notes].map(q).join(';');
+    });
+    download(`${slug(p.name)}.csv`, '﻿' + [cols.join(';'), ...rows].join('\r\n'), 'text/csv;charset=utf-8');
+  });
+
+  function geomShape(g) {
+    if (g.type.includes('Polygon')) return 'Polygon';
+    if (g.type.includes('LineString')) return 'Line';
+    return 'Marker';
+  }
+
+  function looksLikeRD(gj) {
+    let sample = null;
+    turf.coordEach(gj, (c) => { if (!sample) sample = c; });
+    return sample && (Math.abs(sample[0]) > 180 || Math.abs(sample[1]) > 90);
+  }
+
+  $('#importFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    let p = Store.activeProject();
+    try {
+      let gj = JSON.parse(await file.text());
+      if (gj.type !== 'FeatureCollection') gj = gj.type === 'Feature' ? turf.featureCollection([gj]) : turf.featureCollection([turf.feature(gj)]);
+      if (looksLikeRD(gj)) { alert('Dit bestand lijkt geen WGS84-coördinaten (graden) te bevatten, bijv. RD New. Exporteer het eerst als WGS84 / EPSG:4326.'); return; }
+      if (!p) p = Store.addProject({ name: gj.name || file.name.replace(/\.[^.]+$/, '') });
+
+      let n = 0;
+      const add = (feat) => {
+        const g = feat.geometry;
+        if (!g) return;
+        if (g.type === 'GeometryCollection' || g.type === 'MultiPoint') { turf.flatten(feat).features.forEach(add); return; }
+        const pr = feat.properties || {};
+        const shape = pr.shape && SHAPE_LABEL[pr.shape] ? pr.shape : geomShape(g);
+        Store.addFeature({
+          projectId: p.id,
+          shape: shape === 'Circle' && !pr.radius ? 'Marker' : shape,
+          geometry: g,
+          ...(pr.radius ? { radius: Number(pr.radius) } : {}),
+          props: {
+            name: pr.name || pr.naam || pr.Name || pr.NAME || pr.title || `Object ${++n}`,
+            kind: pr.kind || pr.soort || (g.type.includes('Polygon') ? 'gebied' : 'asset'),
+            category: pr.category || pr.categorie || pr.type || '',
+            status: pr.status || 'In beheer',
+            ref: pr.ref || pr.kenmerk || pr.id || '',
+            notes: pr.notes || pr.notities || pr.description || '',
+            color: pr.color || pr.kleur || p.color,
+          },
+        });
+        n++;
+      };
+      gj.features.forEach(add);
+      refreshAll();
+      zoomToProject();
+      toast(`${n} object(en) geïmporteerd`);
+    } catch (err) {
+      console.error(err);
+      alert('Importeren mislukt: ' + err.message);
+    }
+  });
+
+  // ---------------------------------------------------------------- Print
+  $('#printMap').addEventListener('click', () => window.print());
+  window.addEventListener('beforeprint', () => {
+    const p = Store.activeProject();
+    $('#printTitle').textContent = `${p ? p.name : 'Kaart'} — ${new Date().toLocaleDateString('nl-NL')}`;
+    setTimeout(() => map.invalidateSize(), 0);
+  });
+  window.addEventListener('afterprint', () => map.invalidateSize());
+
+  // ---------------------------------------------------------------- Zoeken adres (PDOK Locatieserver)
+  const gcInput = $('#geocodeInput');
+  const gcResults = $('#geocodeResults');
+  let gcTimer = null;
+  let gcCtrl = null;
+
+  async function geocode(q) {
+    gcCtrl?.abort();
+    gcCtrl = new AbortController();
+    const url = `https://api.pdok.nl/bzk/locatieserver/search/v3_1/free?rows=8&fl=weergavenaam,centroide_ll,type&q=${encodeURIComponent(q)}`;
+    try {
+      const res = await fetch(url, { signal: gcCtrl.signal });
+      const data = await res.json();
+      const docs = data.response?.docs || [];
+      gcResults.innerHTML = docs.length
+        ? docs.map(d => `<li data-ll="${esc(d.centroide_ll)}" data-type="${esc(d.type)}">${esc(d.weergavenaam)} <span class="muted">· ${esc(d.type)}</span></li>`).join('')
+        : '<li>Niets gevonden</li>';
+    } catch (e) {
+      if (e.name !== 'AbortError') gcResults.innerHTML = '<li>Zoeken niet beschikbaar</li>';
+    }
+  }
+
+  gcInput.addEventListener('input', () => {
+    clearTimeout(gcTimer);
+    const q = gcInput.value.trim();
+    if (q.length < 3) { gcResults.innerHTML = ''; return; }
+    gcTimer = setTimeout(() => geocode(q), 250);
+  });
+  $('#geocoder').addEventListener('submit', (e) => {
+    e.preventDefault();
+    gcResults.querySelector('li[data-ll]')?.click();
+  });
+  gcResults.addEventListener('click', (e) => {
+    const li = e.target.closest('li[data-ll]');
+    if (!li) return;
+    const m = /POINT\(([-\d.]+) ([-\d.]+)\)/.exec(li.dataset.ll);
+    if (m) {
+      const zoom = { adres: 19, postcode: 18, weg: 17, woonplaats: 13, gemeente: 12, provincie: 9 }[li.dataset.type] || 16;
+      map.setView([+m[2], +m[1]], zoom);
+    }
+    gcResults.innerHTML = '';
+    gcInput.blur();
+  });
+  document.addEventListener('click', (e) => { if (!e.target.closest('#geocoder')) gcResults.innerHTML = ''; });
+
+  // ---------------------------------------------------------------- Labels & zijbalk
+  const LabelControl = L.Control.extend({
+    options: { position: 'topright' },
+    onAdd() {
+      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+      div.innerHTML = '<a href="#" title="Labels tonen/verbergen" role="button" style="font-weight:700;width:auto;padding:0 8px">Aa</a>';
+      L.DomEvent.disableClickPropagation(div);
+      div.firstChild.addEventListener('click', (e) => {
+        e.preventDefault();
+        showLabels = !showLabels;
+        div.firstChild.style.opacity = showLabels ? 1 : 0.5;
+        (Store.activeProject() ? Store.features(Store.activeProject().id) : []).forEach(applyStyle);
+      });
+      return div;
+    },
+  });
+  new LabelControl().addTo(map);
+
+  $('#toggleSidebar').addEventListener('click', () => {
+    $('#sidebar').classList.toggle('collapsed');
+    setTimeout(() => map.invalidateSize(), 250);
+  });
+
+  // ---------------------------------------------------------------- Toast
+  let toastTimer;
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // ---------------------------------------------------------------- Start
+  function refreshAll() {
+    renderProjects();
+    renderLayers();
+    renderList();
+    renderCategories();
+  }
+
+  if (!Store.projects().length) {
+    Store.addProject({ name: 'Mijn eerste project', description: 'Teken een polygoon om te beginnen.', color: '#2563eb' });
+  } else if (!Store.activeProject()) {
+    Store.setActive(Store.projects()[0].id);
+  }
+  refreshAll();
+
+  // Handig voor debuggen in de console
+  window.Kaartdata = { map, Store, select };
+})();

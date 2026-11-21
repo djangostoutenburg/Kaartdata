@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kaartdata – projecten &amp; assets</title>
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="vendor/geoman/leaflet-geoman.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header class="sb-header">
+        <h1>Kaartdata</h1>
+        <button id="toggleSidebar" class="icon-btn" title="Zijbalk in/uitklappen">☰</button>
+      </header>
+
+      <section class="sb-section">
+        <div class="row">
+          <label for="projectSelect">Project</label>
+          <div class="btn-group">
+            <button id="newProject" class="small" title="Nieuw project">+ Nieuw</button>
+            <button id="editProject" class="small" title="Project bewerken">✎</button>
+            <button id="deleteProject" class="small danger" title="Project verwijderen">🗑</button>
+          </div>
+        </div>
+        <select id="projectSelect"></select>
+        <p id="projectMeta" class="muted"></p>
+      </section>
+
+      <section class="sb-section">
+        <label>Tekenen</label>
+        <div class="draw-grid">
+          <button data-draw="Polygon" title="Polygoon tekenen (gebied/perceel)">⬠ Polygoon</button>
+          <button data-draw="Rectangle" title="Rechthoek tekenen">▭ Rechthoek</button>
+          <button data-draw="Line" title="Lijn tekenen (kabel, leiding, route)">╱ Lijn</button>
+          <button data-draw="Marker" title="Puntasset plaatsen">📍 Punt</button>
+          <button data-draw="Circle" title="Cirkel tekenen">◯ Cirkel</button>
+          <button id="cancelDraw" title="Tekenen stoppen (Esc)">✕ Stop</button>
+        </div>
+        <p class="muted hint">Klik op de kaart om punten te zetten. Klik op het eerste punt (of dubbelklik) om af te sluiten.</p>
+      </section>
+
+      <section class="sb-section grow">
+        <div class="row">
+          <label for="search">Objecten <span id="featureCount" class="badge">0</span></label>
+          <select id="typeFilter" class="small">
+            <option value="">Alle</option>
+            <option value="gebied">Gebieden</option>
+            <option value="asset">Assets</option>
+          </select>
+        </div>
+        <input id="search" type="search" placeholder="Zoek op naam, categorie of notitie…">
+        <ul id="featureList"></ul>
+      </section>
+
+      <section class="sb-section">
+        <label>Gegevens</label>
+        <div class="btn-row">
+          <button id="exportProject" title="Huidig project als GeoJSON downloaden">⬇ GeoJSON</button>
+          <button id="exportCsv" title="Objectenlijst als CSV downloaden">⬇ CSV</button>
+          <label class="button" title="GeoJSON-bestand importeren in huidig project">⬆ Import<input id="importFile" type="file" accept=".geojson,.json,application/geo+json" hidden></label>
+          <button id="printMap" title="Kaart afdrukken of opslaan als PDF">🖨 Print/PDF</button>
+        </div>
+      </section>
+    </aside>
+
+    <main id="mapWrap">
+      <div id="map"></div>
+      <form id="geocoder" autocomplete="off">
+        <input id="geocodeInput" type="search" placeholder="Zoek adres of plaats (PDOK)…">
+        <ul id="geocodeResults"></ul>
+      </form>
+      <div id="printTitle"></div>
+    </main>
+
+    <aside id="panel" hidden>
+      <header class="sb-header">
+        <h2 id="panelTitle">Object</h2>
+        <button id="closePanel" class="icon-btn" title="Sluiten">✕</button>
+      </header>
+      <form id="featureForm">
+        <label>Naam<input name="name" required></label>
+        <div class="two">
+          <label>Soort
+            <select name="kind">
+              <option value="gebied">Gebied / projectvlak</option>
+              <option value="asset">Asset</option>
+            </select>
+          </label>
+          <label>Kleur<input name="color" type="color"></label>
+        </div>
+        <label>Categorie
+          <input name="category" list="categoryList" placeholder="bijv. Perceel, Gebouw, Kabel…">
+          <datalist id="categoryList"></datalist>
+        </label>
+        <div class="two">
+          <label>Status
+            <select name="status">
+              <option>Gepland</option>
+              <option>In uitvoering</option>
+              <option>Gereed</option>
+              <option>In beheer</option>
+              <option>Buiten gebruik</option>
+            </select>
+          </label>
+          <label>ID / Kenmerk<input name="ref" placeholder="bijv. A-0012"></label>
+        </div>
+        <label>Notities<textarea name="notes" rows="4"></textarea></label>
+        <div id="measure" class="measure"></div>
+        <div id="coords" class="muted small-text"></div>
+        <div class="btn-row">
+          <button type="submit" class="primary">Opslaan</button>
+          <button type="button" id="zoomFeature">Zoom</button>
+          <button type="button" id="editShape">Vorm bewerken</button>
+          <button type="button" id="deleteFeature" class="danger">Verwijderen</button>
+        </div>
+      </form>
+    </aside>
+  </div>
+
+  <dialog id="projectDialog">
+    <form method="dialog" id="projectForm">
+      <h2 id="projectDialogTitle">Nieuw project</h2>
+      <label>Naam<input name="name" required></label>
+      <label>Opdrachtgever / eigenaar<input name="client"></label>
+      <label>Omschrijving<textarea name="description" rows="3"></textarea></label>
+      <label>Standaardkleur<input name="color" type="color" value="#2563eb"></label>
+      <div class="btn-row end">
+        <button value="cancel" formnovalidate>Annuleren</button>
+        <button value="ok" class="primary">Opslaan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/geoman/leaflet-geoman.min.js"></script>
+  <script src="vendor/turf/turf.min.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
