@@ -19,7 +19,7 @@ Je kunt de map ook hosten via GitHub Pages (Settings → Pages → branch kiezen
 - **Eigenschappen per object** – naam, soort (gebied of asset), categorie, status, kenmerk/ID, notities en kleur.
 - **Metingen** – oppervlakte (m²/ha), omtrek en lengte worden automatisch berekend.
 - **Achtergronden** – PDOK Standaard, Grijs, Pastel, Luchtfoto en OpenStreetMap, plus kadastrale percelen als overlay (inzoomen tot ±niveau 16).
-- **Adres zoeken** – via de PDOK Locatieserver.
+- **Zoeken** – in de zoekbalk bovenaan op kenmerk of naam van je eigen objecten (in alle projecten; hoofdletters, spaties en streepjes maken niet uit, dus `gr201` vindt `GR-201`) en op adres, postcode of plaats via de PDOK Locatieserver.
 - **Zoeken & filteren** in de objectenlijst.
 - **Export** – GeoJSON (inclusief oppervlakte/lengte) en CSV (opent in Excel); **import** van GeoJSON (WGS84).
 - **Print / PDF** – kaart afdrukken of als PDF opslaan (A4 liggend).

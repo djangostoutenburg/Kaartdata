@@ -969,7 +969,7 @@
     listEl.innerHTML = items.map(f => {
       const c = colorOf(f);
       const st = f.props.status ? `<span class="status ${STATUS_CLASS[f.props.status] || ''}">${esc(f.props.status)}</span>` : '';
-      const sub = [f.props.category && esc(f.props.category), st].filter(Boolean).join(' · ');
+      const sub = [f.props.ref && `<span class="f-ref mono">${esc(f.props.ref)}</span>`, f.props.category && esc(f.props.category), st].filter(Boolean).join(' · ');
       return `
       <li data-id="${esc(f.id)}" class="${f.id === selectedId ? 'selected' : ''}">
         <span class="f-icon" style="color:${esc(c)};background:${esc(c)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
@@ -1271,33 +1271,82 @@
   let gcTimer = null;
   let gcCtrl = null;
 
+  // Eigen objecten (alle projecten) die passen bij de zoekterm: kenmerk eerst, dan naam
+  function searchObjects(q) {
+    // Hoofdletters, spaties, streepjes en punten negeren: "gr201" vindt "GR-201"
+    const norm = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+    const t = norm(q);
+    if (!t) return [];
+    const hits = [];
+    Store.state.features.forEach(f => {
+      const ref = norm(f.props.ref), name = norm(f.props.name), cat = norm(f.props.category);
+      let score = 0;
+      if (ref && ref === t) score = 100;
+      else if (ref && ref.startsWith(t)) score = 80;
+      else if (ref && ref.includes(t)) score = 60;
+      else if (name.startsWith(t)) score = 40;
+      else if (name.includes(t)) score = 30;
+      else if (cat === t) score = 10;
+      if (score) hits.push({ f, score });
+    });
+    return hits.sort((a, b) => b.score - a.score || String(a.f.props.ref || a.f.props.name).localeCompare(String(b.f.props.ref || b.f.props.name), 'nl', { numeric: true })).slice(0, 8).map(h => h.f);
+  }
+
+  function objectResultsHtml(q) {
+    return searchObjects(q).map(f => {
+      const proj = Store.project(f.projectId);
+      const label = f.props.ref ? `<span class="gc-ref mono">${esc(f.props.ref)}</span> ${esc(f.props.name || '')}` : esc(f.props.name || '(naamloos)');
+      const sub = [f.props.category, proj && proj.id !== Store.state.activeProjectId ? proj.name : ''].filter(Boolean).join(' · ');
+      return `<li data-fid="${esc(f.id)}" class="gc-obj"><span class="gc-icon" style="color:${esc(colorOf(f))}">${icon(SHAPE_ICON[shapeOf(f)])}</span><span class="gc-main"><span>${label}</span>${sub ? `<small>${esc(sub)}</small>` : ''}</span><span class="gc-type">object</span></li>`;
+    }).join('');
+  }
+
   async function geocode(q) {
     gcCtrl?.abort();
     gcCtrl = new AbortController();
-    const url = `https://api.pdok.nl/bzk/locatieserver/search/v3_1/free?rows=8&fl=weergavenaam,centroide_ll,type&q=${encodeURIComponent(q)}`;
+    const own = objectResultsHtml(q);
+    gcResults.innerHTML = own;
+    if (q.length < 3) { if (!own) gcResults.innerHTML = ''; return; }
+    const url = `https://api.pdok.nl/bzk/locatieserver/search/v3_1/free?rows=6&fl=weergavenaam,centroide_ll,type&q=${encodeURIComponent(q)}`;
     try {
       const res = await fetch(url, { signal: gcCtrl.signal });
       const data = await res.json();
       const docs = data.response?.docs || [];
-      gcResults.innerHTML = docs.length
-        ? docs.map(d => `<li data-ll="${esc(d.centroide_ll)}" data-type="${esc(d.type)}"><span>${esc(d.weergavenaam)}</span><span class="gc-type">${esc(d.type)}</span></li>`).join('')
-        : '<li>Niets gevonden</li>';
+      const places = docs.map(d => `<li data-ll="${esc(d.centroide_ll)}" data-type="${esc(d.type)}"><span>${esc(d.weergavenaam)}</span><span class="gc-type">${esc(d.type)}</span></li>`).join('');
+      gcResults.innerHTML = own + places || '<li class="gc-none">Niets gevonden</li>';
     } catch (e) {
-      if (e.name !== 'AbortError') gcResults.innerHTML = '<li>Zoeken niet beschikbaar</li>';
+      if (e.name !== 'AbortError') gcResults.innerHTML = own || '<li class="gc-none">Zoeken niet beschikbaar</li>';
     }
   }
 
   gcInput.addEventListener('input', () => {
     clearTimeout(gcTimer);
     const q = gcInput.value.trim();
-    if (q.length < 3) { gcResults.innerHTML = ''; return; }
+    if (!q) { gcResults.innerHTML = ''; return; }
+    gcResults.innerHTML = objectResultsHtml(q);   // eigen objecten direct tonen
     gcTimer = setTimeout(() => geocode(q), 250);
   });
   $('#geocoder').addEventListener('submit', (e) => {
     e.preventDefault();
-    gcResults.querySelector('li[data-ll]')?.click();
+    gcResults.querySelector('li[data-fid], li[data-ll]')?.click();
   });
   gcResults.addEventListener('click', (e) => {
+    const obj = e.target.closest('li[data-fid]');
+    if (obj) {
+      const f = Store.feature(obj.dataset.fid);
+      gcResults.innerHTML = '';
+      gcInput.blur();
+      if (!f) return;
+      stopPick(); stopDrawing(); stopEditing();
+      if (f.projectId !== Store.state.activeProjectId) {
+        Store.setActive(f.projectId);
+        refreshAll();
+      }
+      if (isMobile()) closeSidebar();
+      select(f.id);
+      zoomTo(f.id);
+      return;
+    }
     const li = e.target.closest('li[data-ll]');
     if (!li) return;
     const m = /POINT\(([-\d.]+) ([-\d.]+)\)/.exec(li.dataset.ll);
@@ -1367,6 +1416,10 @@
     Store.setActive(Store.projects()[0].id);
   }
   refreshAll();
+
+  // Op iOS de pagina zelf niet laten zoomen (alleen de kaart); Leaflet gebruikt touch-events, geen gesture-events
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(t => document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
+  document.addEventListener('touchmove', (e) => { if (e.touches.length > 1 && !e.target.closest('#map')) e.preventDefault(); }, { passive: false });
 
   // Offline beschikbaar / installeerbaar als app
   if ('serviceWorker' in navigator && location.protocol === 'https:') {

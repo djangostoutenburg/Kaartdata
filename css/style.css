@@ -65,7 +65,11 @@ body {
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
+  touch-action: pan-x pan-y;   /* geen pinch-zoom of dubbeltik-zoom op de pagina; de kaart regelt zijn eigen zoom */
+  -webkit-text-size-adjust: 100%;
 }
+html { touch-action: pan-x pan-y; }
+#map { touch-action: none; }
 [hidden] { display: none !important; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
@@ -262,6 +266,14 @@ body.sidebar-collapsed #openSidebar { display: grid; }
 #geocodeResults:empty { display: none; }
 #geocodeResults li { padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
 #geocodeResults li:hover { background: var(--surface-2); }
+#geocodeResults li.gc-obj { align-items: center; justify-content: flex-start; }
+#geocodeResults .gc-icon { width: 26px; height: 26px; display: grid; place-items: center; flex: none; }
+#geocodeResults .gc-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#geocodeResults .gc-icon svg .fill { fill: currentColor; stroke: none; }
+#geocodeResults .gc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#geocodeResults .gc-main small { color: var(--muted); font-size: 12px; }
+#geocodeResults .gc-ref, .f-ref { font-weight: 500; color: var(--accent); }
+#geocodeResults li.gc-none { color: var(--muted); cursor: default; }
 #geocodeResults .gc-type { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); white-space: nowrap; }
 
 .draw-hint {
