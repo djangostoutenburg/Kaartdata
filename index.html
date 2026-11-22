@@ -17,11 +17,13 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/geoman/leaflet-geoman.css">
-  <link rel="stylesheet" href="css/style.css?v=20261122c">
+  <link rel="stylesheet" href="css/style.css?v=20261122d">
   <script>
     // Wachtwoordtoegang: vergrendeld tenzij dit apparaat (of dit tabblad) al toegang heeft
     (function () {
       var ok = '597d6705380ef2d50bd67a8de3c31d694851cb839380cedaf6dfc74e7be144d7';
+      // Kijklinks (#d=… / #deel=…) openen zonder wachtwoord: die tonen alleen de gedeelde vakken
+      if (/^#(d|deel)=/.test(location.hash)) return;
       try { if (localStorage.getItem('kaartdata.toegang') === ok || sessionStorage.getItem('kaartdata.toegang') === ok) return; } catch (e) {}
       document.documentElement.classList.add('locked');
     })();
@@ -334,9 +336,9 @@
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="vendor/turf/turf.min.js"></script>
-  <script src="js/gate.js?v=20261122c"></script>
-  <script src="js/store.js?v=20261122c"></script>
-  <script src="js/share.js?v=20261122c"></script>
-  <script src="js/app.js?v=20261122c"></script>
+  <script src="js/gate.js?v=20261122d"></script>
+  <script src="js/store.js?v=20261122d"></script>
+  <script src="js/share.js?v=20261122d"></script>
+  <script src="js/app.js?v=20261122d"></script>
 </body>
 </html>
