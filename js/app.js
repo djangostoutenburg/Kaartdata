@@ -261,6 +261,30 @@
     return rows.join('');
   }
 
+  // ---------------------------------------------------------------- BGT-vakken opvragen (voor kijklinks)
+  const BGT_API = 'https://api.pdok.nl/lv/bgt/ogc/v1/collections';
+  async function fetchBgtRef(ref) {
+    const [coll, id] = ref.split(':');
+    const now = new Date().toISOString().slice(0, 19) + 'Z';
+    const res = await fetch(`${BGT_API}/${coll}/items?f=json&lokaal_id=${encodeURIComponent(id)}&datetime=${now}`);
+    if (!res.ok) throw new Error(`PDOK ${res.status}`);
+    const data = await res.json();
+    const f = (data.features || [])[0];
+    if (!f) throw new Error('niet gevonden');
+    let g = f.geometry;
+    if (g.type === 'MultiPolygon' && g.coordinates.length === 1) g = { type: 'Polygon', coordinates: g.coordinates[0] };
+    if (g.type === 'MultiLineString' && g.coordinates.length === 1) g = { type: 'LineString', coordinates: g.coordinates[0] };
+    return g;
+  }
+  // Eén of meer BGT-vakken -> één geometrie (samengevoegd als het er meer zijn)
+  async function geometryFromRefs(refs) {
+    const geoms = await Promise.all(refs.map(fetchBgtRef));
+    if (geoms.length === 1) return geoms[0];
+    const merged = turf.union(turf.featureCollection(geoms.map(g => turf.feature(g))));
+    if (!merged) throw new Error('samenvoegen mislukt');
+    return merged.geometry;
+  }
+
   // ---------------------------------------------------------------- Kijkmodus (deelbare link)
   async function startViewer() {
     document.body.classList.add('viewer');
@@ -274,6 +298,22 @@
       feats = await Share.decode(Share.payloadFromHash());
     } catch (err) {
       card.innerHTML = `<div class="vc-error"><strong>Deze link kan niet worden geopend</strong><span>${esc(/^Deze /.test(err.message || '') ? err.message : 'De link is ongeldig of onvolledig. Vraag de afzender om hem opnieuw te sturen.')}</span></div>`;
+      return;
+    }
+
+    // Vakken met een BGT-nummer: exacte vorm bij PDOK ophalen (reservevorm uit de link als dat niet lukt)
+    let notice = '';
+    await Promise.all(feats.map(async (f) => {
+      if (!f.refs) return;
+      try {
+        f.geometry = await geometryFromRefs(f.refs);
+      } catch (err) {
+        if (f.geometry) notice = 'De exacte vorm kon niet bij de BGT worden opgehaald; er wordt een vereenvoudigde vorm getoond.';
+      }
+    }));
+    feats = feats.filter(f => f.geometry);
+    if (!feats.length) {
+      card.innerHTML = '<div class="vc-error"><strong>Dit vak kon niet worden geladen</strong><span>Het vak is niet (meer) gevonden in de BGT, of PDOK is niet bereikbaar. Probeer het later opnieuw.</span></div>';
       return;
     }
 
@@ -312,6 +352,7 @@
         ${c ? `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${c[1].toFixed(6)},${c[0].toFixed(6)}"><svg><use href="#i-next"/></svg>Route</a>` : ''}
         <button type="button" class="btn" id="vcLocate"><svg><use href="#i-gps"/></svg>Mijn locatie</button>
       </div>
+      ${notice ? `<p class="vc-notice">${esc(notice)}</p>` : ''}
       <p class="vc-foot">Kijklink · gemaakt met Kaartdata</p>`;
 
     document.documentElement.style.setProperty('--vc-h', `${card.offsetHeight}px`);
@@ -923,6 +964,7 @@
       ref: '',
       color: info.color,
       status: 'In beheer',
+      bgt: [item.id],
       notes: `Overgenomen uit ${info.source}${item.srcId ? ` (id ${item.srcId})` : ''} op ${new Date().toLocaleDateString('nl-NL')}.${info.extra ? `\n${cap(info.extra)}.` : ''}`,
     };
   }
@@ -946,6 +988,7 @@
           ...propsFromItem(polys[0]),
           name: same('name') ? polys[0].info.name : 'Groengebied',
           category: same('category') ? polys[0].info.category : 'Groen',
+          bgt: polys.map(i => i.id),
           notes: `Samengevoegd uit ${polys.length} vlakken op ${new Date().toLocaleDateString('nl-NL')}:\n` +
             polys.map(i => `- ${i.info.name} (${i.info.source}${i.srcId ? `, id ${i.srcId}` : ''})`).join('\n'),
         },
@@ -1318,22 +1361,85 @@
 
 
   // ---------------------------------------------------------------- Delen (kijklink)
+  // BGT-nummers van een object: uit props.bgt, of (oudere objecten) uit de notities
+  const SOURCE_COLL = {
+    'BGT begroeid terreindeel': 'begroeidterreindeel', 'BGT ondersteunend wegdeel': 'ondersteunendwegdeel',
+    'BGT onbegroeid terreindeel': 'onbegroeidterreindeel', 'BGT wegdeel': 'wegdeel', 'BGT waterdeel': 'waterdeel',
+    'BGT ondersteunend waterdeel': 'ondersteunendwaterdeel', 'BGT pand': 'pand', 'BGT overbruggingsdeel': 'overbruggingsdeel',
+  };
+  function candidateRefs(f) {
+    if (Array.isArray(f.props.bgt) && f.props.bgt.length) return f.props.bgt;
+    const refs = [];
+    const re = /(BGT [a-z ]+?)(?: \(|, )id ([A-Z]\d{4}\.[0-9a-f]{32})/g;
+    let m;
+    while ((m = re.exec(f.props.notes || ''))) {
+      let coll = SOURCE_COLL[m[1]];
+      if (m[1] === 'BGT vegetatieobject') coll = f.geometry.type === 'Point' ? 'vegetatieobject_punt' : /Line/.test(f.geometry.type) ? 'vegetatieobject_lijn' : 'vegetatieobject_vlak';
+      if (coll) refs.push(`${coll}:${m[2]}`);
+    }
+    return refs;
+  }
+  // Alleen als de vorm nog precies gelijk is aan de BGT (niet aangepast) mag het nummer de vorm vervangen.
+  // Punt voor punt vergelijken; alleen de afronding op 6 decimalen (± 10 cm) bij het opslaan is toegestaan.
+  function sameShape(a, b) {
+    try {
+      const norm = (g) => g.type === 'MultiPolygon' && g.coordinates.length === 1 ? { type: 'Polygon', coordinates: g.coordinates[0] } : g;
+      a = norm(a); b = norm(b);
+      if (a.type !== b.type) return false;
+      const ca = turf.coordAll(a), cb = turf.coordAll(b);
+      if (ca.length !== cb.length) return false;
+      return ca.every((p, i) => Math.abs(p[0] - cb[i][0]) <= 2e-6 && Math.abs(p[1] - cb[i][1]) <= 2e-6);
+    } catch (e) { return false; }
+  }
+  async function verifiedRefs(f) {
+    const refs = candidateRefs(f);
+    if (!refs.length || f.shape === 'Circle') return null;
+    try {
+      const g = await geometryFromRefs(refs);
+      return sameShape(g, f.geometry) ? refs : null;
+    } catch (e) { return null; }
+  }
+
+  // Kijklink voor één object (BGT-nummer als de vorm ongewijzigd is, anders vereenvoudigde vorm)
+  async function buildShareLink(f, maxLen) {
+    const refs = await verifiedRefs(f);
+    return Share.linkFor([{ ...f, refs: refs || undefined }], maxLen);
+  }
+
   const shareDialog = $('#shareDialog');
   async function openShare(f) {
     flushSave();
-    let url;
+    const btn = $('#shareFeature');
+    btn.disabled = true;
+    let res;
     try {
-      url = await Share.linkFor([f]);
+      res = await buildShareLink(f);
     } catch (err) {
-      toast('Delen lukte niet: ' + err.message);
+      toast(err.message);
       return;
+    } finally {
+      btn.disabled = false;
     }
+    const url = res.url;
     $('#shareUrl').value = url;
     $('#shareTitle').textContent = `Kijklink voor “${f.props.name || 'dit vak'}”`;
-    const kb = (url.length / 1024).toFixed(1);
-    $('#shareInfo').textContent = url.length > 8000
-      ? `Lange link (${kb} kB) door de gedetailleerde vorm. Werkt in browsers, maar sommige apps knippen lange links af; stuur hem dan via mail.`
-      : `Linklengte ${url.length} tekens.`;
+    let info;
+    if (res.usedRefs) {
+      info = 'Exacte BGT-vorm: de kijkweergave haalt het vak op bij PDOK' + (res.withGeom ? ' (met reservevorm in de link).' : '.');
+    } else if (f.geometry.type === 'Point' || res.tol <= 0.1) {
+      info = 'Vorm op ± 10 cm nauwkeurig.';
+    } else {
+      let dev = '';
+      try {
+        if (/Polygon/.test(f.geometry.type)) {
+          const a0 = turf.area(f.geometry), a1 = turf.area(Share.simplify(f.geometry, res.tol));
+          dev = `, oppervlakte wijkt ${nf(Math.abs(a1 - a0) / a0 * 100, 1)}% af`;
+        }
+      } catch (e) { /* */ }
+      info = `Vorm vereenvoudigd tot ± ${nf(res.tol, res.tol < 1 ? 2 : 0)} m om binnen ${Share.MAX_LEN} tekens te blijven${dev}.`;
+    }
+    if (res.meta >= 1) info += ' Categorie en status zijn weggelaten om ruimte te sparen.';
+    $('#shareInfo').innerHTML = `<strong>${url.length} / ${Share.MAX_LEN} tekens</strong> · ${esc(info)}`;
     $('#shareNative').hidden = !navigator.share;
     shareDialog.showModal();
     $('#shareUrl').select();
@@ -1690,5 +1796,5 @@
   }
 
   // Handig voor debuggen in de console
-  window.Kaartdata = { map, Store, select };
+  window.Kaartdata = { map, Store, select, buildShareLink };
 })();
