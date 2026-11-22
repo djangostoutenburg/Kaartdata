@@ -1,0 +1,17 @@
+{
+  "name": "Kaartdata – projecten & assets",
+  "short_name": "Kaartdata",
+  "description": "Teken gebieden, lijnen en assets op de kaart en exporteer ze.",
+  "lang": "nl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1a2a",
+  "theme_color": "#0f1a2a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

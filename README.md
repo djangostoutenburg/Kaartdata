@@ -26,6 +26,13 @@ Je kunt de map ook hosten via GitHub Pages (Settings → Pages → branch kiezen
 
 Alle gegevens worden lokaal in je browser bewaard (localStorage). Maak regelmatig een GeoJSON-export als back-up, of om gegevens naar een andere computer of naar GIS-software (QGIS, ArcGIS) te verplaatsen.
 
+## Op je telefoon
+
+- **Als app installeren:** open de link in Safari (iPhone) of Chrome (Android) en kies *Deel → Zet op beginscherm*. De tool opent dan schermvullend, als een gewone app.
+- **Tekenen met je vinger:** tik op een gereedschap in de balk onderin. Tijdens het tekenen heb je de knoppen *Ongedaan*, *GPS-punt*, *Klaar* en *Stop*.
+- **GPS:** met de locatieknop rechts zie je waar je staat. Met *GPS-punt* plaats je een asset of hoekpunt precies op je huidige locatie, handig om in het veld een terrein af te lopen.
+- **Vorm aanpassen:** open een object en tik op *Vorm*. Sleep de hoekpunten; houd een hoekpunt vast om het te verwijderen.
+
 ## Structuur
 
 ```

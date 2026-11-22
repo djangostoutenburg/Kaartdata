@@ -20,6 +20,13 @@
     Marker: 'Klik op de kaart om het punt te plaatsen',
     Circle: 'Klik op het middelpunt en daarna op de rand',
   };
+  const DRAW_HINT_TOUCH = {
+    Polygon: 'Tik op de kaart om hoekpunten te zetten',
+    Rectangle: 'Tik op twee tegenoverliggende hoeken',
+    Line: 'Tik op de kaart om punten te zetten',
+    Marker: 'Tik op de kaart of gebruik je GPS-locatie',
+    Circle: 'Tik op het middelpunt en daarna op de rand',
+  };
   const STATUS_CLASS = {
     'Gepland': 'st-gepland', 'In uitvoering': 'st-uitvoering', 'Gereed': 'st-gereed',
     'In beheer': 'st-beheer', 'Buiten gebruik': 'st-buiten',
@@ -225,16 +232,15 @@
   }
 
   // Nieuw getekend object
-  map.on('pm:create', (e) => {
+  function createFromLayer(shape, layer) {
     const p = Store.activeProject();
-    if (!p) { e.layer.remove(); return; }
-    const shape = e.shape;
+    if (!p) { layer.remove(); return null; }
     const count = Store.features(p.id).length + 1;
     const kind = shape === 'Marker' || shape === 'Line' ? 'asset' : 'gebied';
     const f = Store.addFeature({
       projectId: p.id,
       shape,
-      ...layerToGeometry(e.layer, shape),
+      ...layerToGeometry(layer, shape),
       props: {
         name: `${SHAPE_LABEL[shape] || shape} ${count}`,
         kind,
@@ -245,12 +251,15 @@
         color: p.color,
       },
     });
-    e.layer.remove();          // vervangen door onze eigen laag
+    layer.remove();          // vervangen door onze eigen laag
     attachLayer(f);
     setDrawButton(null);
     renderList();
     select(f.id, { focusName: true });
-  });
+    if (isMobile()) toast('Opgeslagen · vul de gegevens aan');
+    return f;
+  }
+  map.on('pm:create', (e) => createFromLayer(e.shape, e.layer));
 
   map.on('pm:remove', (e) => {
     const id = e.layer.featureId;
@@ -277,19 +286,53 @@
     if (selectedId === id) select(id);
   });
 
-  map.on('click', () => { if (!map.pm.globalDrawModeEnabled()) closePanel(); });
+  map.on('click', () => { if (!map.pm.globalDrawModeEnabled() && !editLayer) closePanel(); });
 
   // ---------------------------------------------------------------- Tekenknoppen
   const drawButtons = document.querySelectorAll('[data-draw]');
-  function setDrawButton(shape) {
-    drawButtons.forEach(b => b.classList.toggle('active', b.dataset.draw === shape));
-    $('#drawHint').hidden = !shape;
-    if (shape) $('#drawHintText').textContent = DRAW_HINT[shape] || '';
+  const hint = $('#drawHint');
+  let drawShape = null;     // vorm die nu getekend wordt
+  let editLayer = null;     // laag die nu bewerkt wordt (vorm aanpassen)
+
+  function vertexCount() {
+    const wl = map.pm.Draw[drawShape]?._layer;
+    if (!wl || !wl.getLatLngs) return 0;
+    return wl.getLatLngs().flat(Infinity).length;
   }
+
+  function updateHintButtons() {
+    const multi = drawShape === 'Polygon' || drawShape === 'Line';
+    const n = multi ? vertexCount() : 0;
+    $('#drawUndo').hidden = !multi;
+    $('#drawUndo').disabled = n === 0;
+    $('#drawFinish').hidden = !(multi || editLayer);
+    $('#drawFinish').disabled = multi && n < (drawShape === 'Polygon' ? 3 : 2);
+    $('#drawGps').hidden = !(multi || drawShape === 'Marker') || !('geolocation' in navigator);
+    $('#cancelDraw').hidden = !!editLayer;
+    if (multi && n > 0) {
+      const need = drawShape === 'Polygon' ? 3 : 2;
+      $('#drawHintText').textContent = n < need
+        ? `${n} punt${n === 1 ? '' : 'en'} · nog ${need - n} nodig`
+        : `${n} punten · tik op Klaar om af te ronden`;
+    }
+  }
+
+  function setDrawButton(shape) {
+    drawShape = shape;
+    drawButtons.forEach(b => b.classList.toggle('active', b.dataset.draw === shape));
+    hint.hidden = !shape && !editLayer;
+    document.body.classList.toggle('drawing', !!shape || !!editLayer);
+    if (shape) $('#drawHintText').textContent = (isMobile() ? DRAW_HINT_TOUCH : DRAW_HINT)[shape] || '';
+    updateHintButtons();
+  }
+
+  function stopDrawing() { map.pm.disableDraw(); setDrawButton(null); }
+
   drawButtons.forEach(btn => btn.addEventListener('click', () => {
     if (!Store.activeProject()) { toast('Maak eerst een project aan'); return; }
     const shape = btn.dataset.draw;
-    if (map.pm.Draw[shape]?.enabled()) { map.pm.disableDraw(); setDrawButton(null); return; }
+    if (map.pm.Draw[shape]?.enabled()) { stopDrawing(); return; }
+    stopEditing();
     closePanel();
     const color = Store.activeProject().color;
     map.pm.enableDraw(shape, {
@@ -298,13 +341,123 @@
       hintlineStyle: { color, dashArray: '5 5' },
       markerStyle: { icon: pinIcon(color) },
       continueDrawing: false,
+      finishOn: null,
+      tooltips: !isMobile(),
     });
     setDrawButton(shape);
   }));
-  map.on('pm:drawend', () => setDrawButton(null));
-  $('#cancelDraw').addEventListener('click', () => { map.pm.disableDraw(); setDrawButton(null); });
+
+  map.on('pm:drawstart', ({ workingLayer }) => {
+    workingLayer?.on?.('pm:vertexadded pm:vertexremoved', () => setTimeout(updateHintButtons, 0));
+  });
+  map.on('pm:drawend', () => { if (drawShape) setDrawButton(null); });
+
+  $('#drawUndo').addEventListener('click', () => {
+    map.pm.Draw[drawShape]?._removeLastVertex?.();
+    updateHintButtons();
+  });
+  $('#drawFinish').addEventListener('click', () => {
+    if (editLayer) { stopEditing(); return; }
+    map.pm.Draw[drawShape]?._finishShape?.();
+  });
+  $('#drawGps').addEventListener('click', async () => {
+    const shape = drawShape;
+    const btn = $('#drawGps');
+    btn.disabled = true;
+    try {
+      const pos = await getPosition();
+      if (shape === 'Marker') {
+        map.pm.disableDraw();
+        createFromLayer('Marker', L.marker(pos.latlng));
+        toast(`Punt geplaatst op GPS (±${Math.round(pos.accuracy)} m)`);
+      } else if (drawShape === shape) {
+        map.pm.Draw[shape]._createVertex({ latlng: pos.latlng });
+        map.panTo(pos.latlng);
+        toast(`GPS-punt toegevoegd (±${Math.round(pos.accuracy)} m)`);
+        updateHintButtons();
+      }
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $('#cancelDraw').addEventListener('click', () => { if (editLayer) stopEditing(); else stopDrawing(); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { map.pm.disableDraw(); setDrawButton(null); }
+    if (e.key === 'Escape') { if (editLayer) stopEditing(); else stopDrawing(); }
+  });
+
+  // Vorm bewerken (hoekpunten slepen) — op telefoon met inklapbaar paneel
+  function startEditing(layer) {
+    stopDrawing();
+    editLayer = layer;
+    layer.pm.enable({ allowSelfIntersection: false, draggable: true });
+    const point = layer instanceof L.Marker;
+    $('#drawHintText').textContent = point
+      ? 'Sleep het punt naar de nieuwe plek'
+      : (isMobile() ? 'Sleep de hoekpunten · houd een punt vast om het te verwijderen' : 'Sleep de hoekpunten · rechtsklik op een punt om het te verwijderen');
+    hint.hidden = false;
+    document.body.classList.add('drawing');
+    $('#panel').classList.add('peek');
+    updateHintButtons();
+    if (isMobile()) {
+      const b = layer.getBounds ? layer.getBounds() : L.latLngBounds([layer.getLatLng(), layer.getLatLng()]);
+      map.fitBounds(b, { paddingTopLeft: [40, 90], paddingBottomRight: [40, 210], maxZoom: Math.max(map.getZoom(), 18) });
+    }
+    $('#editShape').classList.add('active');
+  }
+  function stopEditing() {
+    if (!editLayer) return;
+    editLayer.pm.disable();
+    editLayer = null;
+    $('#panel').classList.remove('peek');
+    $('#editShape').classList.remove('active');
+    setDrawButton(null);
+    const f = Store.feature(selectedId);
+    if (f) { renderMeasure(f); toast('Vorm opgeslagen'); }
+  }
+
+  // ---------------------------------------------------------------- GPS / mijn locatie
+  let posLayer = null;
+  function getPosition() {
+    return new Promise((resolve, reject) => {
+      if (!('geolocation' in navigator)) return reject(new Error('Locatie wordt niet ondersteund op dit toestel'));
+      navigator.geolocation.getCurrentPosition(
+        (p) => {
+          const pos = { latlng: L.latLng(p.coords.latitude, p.coords.longitude), accuracy: p.coords.accuracy };
+          showPosition(pos);
+          resolve(pos);
+        },
+        (err) => reject(new Error(err.code === 1
+          ? 'Geen toegang tot je locatie. Sta locatie toe in je browserinstellingen.'
+          : 'Locatie niet gevonden. Probeer het buiten opnieuw.')),
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+    });
+  }
+  function showPosition({ latlng, accuracy }) {
+    if (!posLayer) {
+      posLayer = L.layerGroup([
+        L.circle(latlng, { radius: accuracy, color: '#1a73e8', weight: 1, fillColor: '#1a73e8', fillOpacity: 0.12, interactive: false, pmIgnore: true }),
+        L.circleMarker(latlng, { radius: 7, color: '#fff', weight: 2.5, fillColor: '#1a73e8', fillOpacity: 1, interactive: false, pmIgnore: true }),
+      ]).addTo(map);
+    } else {
+      const [acc, dot] = posLayer.getLayers();
+      acc.setLatLng(latlng).setRadius(accuracy);
+      dot.setLatLng(latlng);
+    }
+  }
+  $('#locateBtn').addEventListener('click', async () => {
+    const btn = $('#locateBtn');
+    btn.classList.add('busy');
+    try {
+      const pos = await getPosition();
+      map.setView(pos.latlng, Math.max(map.getZoom(), 18));
+      btn.classList.add('on');
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      btn.classList.remove('busy');
+    }
   });
 
   // ---------------------------------------------------------------- Projecten
@@ -481,6 +634,7 @@
   const form = $('#featureForm');
 
   function select(id, opts = {}) {
+    if (editLayer && editLayer !== featureLayers.get(id)) stopEditing();
     const prev = selectedId;
     selectedId = id;
     if (prev && prev !== id) {
@@ -529,6 +683,7 @@
   }
 
   function closePanel() {
+    if (editLayer) stopEditing();
     if (selectedId) {
       featureLayers.get(selectedId)?.pm?.disable();
       const f = Store.feature(selectedId);
@@ -571,6 +726,13 @@
   });
 
   $('#closePanel').addEventListener('click', closePanel);
+  // Onderpaneel in-/uitklappen door op de kop te tikken (telefoon)
+  function togglePeek(e) {
+    if (!isMobile() || e.target.closest('#closePanel')) return;
+    panel.classList.toggle('peek');
+  }
+  $('#sheetGrip').addEventListener('click', togglePeek);
+  $('#panelHead').addEventListener('click', togglePeek);
   $('#zoomFeature').addEventListener('click', () => zoomTo(selectedId));
   $('#deleteFeature').addEventListener('click', async () => {
     const f = Store.feature(selectedId);
@@ -584,18 +746,21 @@
   $('#editShape').addEventListener('click', () => {
     const layer = featureLayers.get(selectedId);
     if (!layer) return;
-    if (layer.pm.enabled()) { layer.pm.disable(); toast('Bewerken gestopt'); }
-    else {
-      layer.pm.enable({ allowSelfIntersection: false, draggable: true });
-      toast(layer instanceof L.Marker ? 'Sleep het punt naar de nieuwe plek' : 'Sleep de hoekpunten; klik rechts op een punt om het te verwijderen');
-    }
+    if (editLayer === layer) stopEditing();
+    else startEditing(layer);
   });
 
+  // Zoom naar object; op telefoon rekening houden met het onderpaneel
   function zoomTo(id) {
     const layer = featureLayers.get(id);
     if (!layer) return;
-    if (layer.getBounds) map.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 19 });
-    else map.setView(layer.getLatLng(), Math.max(map.getZoom(), 18));
+    const b = layer.getBounds ? layer.getBounds() : L.latLngBounds([layer.getLatLng(), layer.getLatLng()]);
+    const sheet = isMobile() && !panel.hidden ? panel.getBoundingClientRect().height : 0;
+    map.fitBounds(b, {
+      paddingTopLeft: [40, isMobile() ? 80 : 60],
+      paddingBottomRight: [40, sheet + 40],
+      maxZoom: layer.getBounds ? 19 : Math.max(map.getZoom(), 18),
+    });
   }
 
   function renderCategories() {
@@ -832,6 +997,11 @@
     Store.setActive(Store.projects()[0].id);
   }
   refreshAll();
+
+  // Offline beschikbaar / installeerbaar als app
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 
   // Handig voor debuggen in de console
   window.Kaartdata = { map, Store, select };

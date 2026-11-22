@@ -63,13 +63,15 @@ body {
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
 }
 [hidden] { display: none !important; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* Alleen interface-iconen; de kaartlagen (Leaflet-SVG) blijven onaangetast */
-:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, dialog) svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, dialog) svg .fill { fill: currentColor; stroke: none; }
+:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, .locate-btn, dialog) svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, .locate-btn, dialog) svg .fill { fill: currentColor; stroke: none; }
 
 #app { display: flex; height: 100vh; height: 100dvh; overflow: hidden; }
 
@@ -262,8 +264,24 @@ body.sidebar-collapsed #openSidebar { display: grid; }
   font-size: 13px; white-space: nowrap; max-width: calc(100% - 24px);
 }
 #drawHintText { overflow: hidden; text-overflow: ellipsis; }
-.hint-btn { border: 0; border-radius: 999px; padding: 5px 12px; background: rgba(255,255,255,.14); color: #fff; font-weight: 600; font-size: 12.5px; }
+.hint-actions { display: flex; gap: 6px; }
+.hint-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 0; border-radius: 999px; padding: 6px 12px;
+  background: rgba(255,255,255,.14); color: #fff; font-weight: 600; font-size: 12.5px;
+}
+.hint-btn svg { width: 15px; height: 15px; stroke-width: 2; }
 .hint-btn:hover { background: rgba(255,255,255,.24); }
+.hint-btn.primary { background: var(--accent); color: #fff; }
+.hint-btn.primary:hover { background: var(--accent-hover); }
+.hint-btn:disabled { opacity: .4; cursor: default; }
+
+.locate-btn { position: absolute; z-index: 900; right: 12px; bottom: 64px; }
+.locate-btn svg { width: 20px; height: 20px; }
+.locate-btn.on { color: #1a73e8; }
+.locate-btn.busy svg { animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.btn.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 
 .mobile-tools { display: none; }
 
@@ -387,8 +405,32 @@ dialog p { margin: 0 0 18px; color: var(--muted); }
     background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-lg);
   }
   .mobile-tools .tool { border: 0; padding: 7px 0 5px; font-size: 10.5px; border-radius: 8px; }
+  body.drawing .mobile-tools { display: none; }
+  .leaflet-pm-toolbar { display: none !important; }
+  .locate-btn { right: 10px; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); width: 46px; height: 46px; }
+
+  /* Tekenbalk onderin, binnen bereik van de duim */
+  .draw-hint {
+    top: auto; left: 10px; right: 10px; transform: none; max-width: none;
+    bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+    flex-direction: column; align-items: stretch; gap: 8px;
+    padding: 10px; border-radius: 14px; white-space: normal;
+  }
+  #drawHintText { text-align: center; font-size: 13.5px; padding: 2px 4px 0; }
+  .hint-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; }
+  .hint-btn { justify-content: center; flex-direction: column; gap: 3px; height: 52px; border-radius: 10px; font-size: 11.5px; padding: 6px 4px; }
+  .hint-btn svg { width: 20px; height: 20px; }
+
+  /* Ingeklapt onderpaneel (tijdens vorm bewerken of door op de kop te tikken) */
+  #panel.peek .measure, #panel.peek #featureForm { display: none; }
+  #panel.peek .panel-head { cursor: pointer; }
+  body.drawing #panel { display: none; }
+  body.drawing .locate-btn { bottom: calc(186px + env(safe-area-inset-bottom, 0px)); }
+  .panel-head { cursor: pointer; }
   .mobile-tools .tool.active { box-shadow: none; }
-  .leaflet-bottom.leaflet-right { bottom: calc(86px + env(safe-area-inset-bottom, 0px)); }
+  .leaflet-bottom.leaflet-right { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+  body.drawing .leaflet-bottom { display: none; }
+  body.drawing #toast { bottom: auto; top: calc(66px + env(safe-area-inset-top, 0px)); }
 
   #panel {
     position: fixed; left: 0; right: 0; bottom: 0; width: auto;
@@ -400,7 +442,12 @@ dialog p { margin: 0 0 18px; color: var(--muted); }
   .sheet-grip { display: block; width: 40px; height: 4px; border-radius: 2px; background: var(--line-strong); margin: 8px auto 0; }
   .panel-head { padding: 10px 16px 12px; }
   input, select, textarea { font-size: 16px; } /* voorkomt inzoomen op iOS */
-  #toast { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+  #toast { bottom: calc(110px + env(safe-area-inset-bottom, 0px)); max-width: calc(100% - 32px); text-align: center; }
+}
+/* Grotere hoekpunten bij aanraakschermen */
+@media (pointer: coarse) {
+  .marker-icon { width: 24px !important; height: 24px !important; margin: -12px 0 0 -12px !important; border-width: 2px !important; }
+  .marker-icon-middle { width: 16px !important; height: 16px !important; margin: -8px 0 0 -8px !important; }
 }
 @keyframes sheet-up { from { transform: translateY(40px); opacity: .4; } to { transform: none; opacity: 1; } }
 
@@ -413,7 +460,7 @@ dialog p { margin: 0 0 18px; color: var(--muted); }
   @page { size: A4 landscape; margin: 10mm; }
   body { background: #fff; }
   #sidebar, #panel, .map-top, .draw-hint, .mobile-tools, #toast, .backdrop,
-  .leaflet-control-zoom, .leaflet-pm-toolbar, .leaflet-control-layers, .label-ctl { display: none !important; }
+  .leaflet-control-zoom, .leaflet-pm-toolbar, .leaflet-control-layers, .label-ctl, .locate-btn { display: none !important; }
   #app, #mapWrap { height: auto; display: block; overflow: visible; }
   #map { position: relative; height: 172mm; border: 1px solid #999; }
   #printTitle { display: block; font: 600 15px var(--font); margin-bottom: 4mm; color: #000; }
