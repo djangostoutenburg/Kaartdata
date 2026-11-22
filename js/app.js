@@ -329,6 +329,7 @@
     $('#drawGps').hidden = !(multi || drawShape === 'Marker') || !('geolocation' in navigator);
     $('#cancelDraw').hidden = !!editLayer;
     $('#pickNext').hidden = true;
+    $('#pickZoom').hidden = !picking || !viewTooLarge();
     $('#pickMerge').hidden = !picking || selectedItems().filter(g => g.item.kind === 'polygon').length < 2;
     $('#pickMerge').classList.toggle('on', pickMerge);
     $('#pickAccept').hidden = !picking || !selectedItems().length;
@@ -492,7 +493,6 @@
   const BGT = 'https://api.pdok.nl/lv/bgt/ogc/v1/collections';
   const cap = (t) => t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
   const GREEN = { vlak: '#3f8f3a', berm: '#5f9e2f', haag: '#2d6a27', boom: '#1d7a3c' };
-  const MIN_PICK_ZOOM = 17;
 
   function greenCategory(text) {
     const t = (text || '').toLowerCase();
@@ -539,9 +539,12 @@
 
   function greenStyle(item, selected) {
     if (item.kind === 'point') {
+      // Bomen kleiner bij verder uitzoomen, zodat de groenvlakken eronder aan te tikken blijven
+      const z = map.getZoom();
+      const r = z >= 18 ? 5.5 : z >= 17 ? 4.5 : 3;
       return selected
-        ? { radius: 8, color: '#fff', weight: 2.5, fillColor: '#0f5a2a', fillOpacity: 1 }
-        : { radius: 5.5, color: '#fff', weight: 1.2, fillColor: item.info.color, fillOpacity: 0.85 };
+        ? { radius: r + 2.5, color: '#fff', weight: 2.5, fillColor: '#0f5a2a', fillOpacity: 1 }
+        : { radius: r, color: '#fff', weight: z >= 17 ? 1.2 : 0.8, fillColor: item.info.color, fillOpacity: 0.85 };
     }
     if (item.kind === 'line') {
       return selected ? { color: '#0f5a2a', weight: 7, opacity: 1 } : { color: item.info.color, weight: 5, opacity: 0.6 };
@@ -576,24 +579,52 @@
     greenGroup.remove();
     greenItems.clear();
     pickLoading = 0;
+    pickQueue = [];
+    pickActive = 0;
+    pickOk = pickFailed = 0;
+    tilesDone.clear();
+    tilesBusy.clear();
     pickButtons.forEach(b => b.classList.remove('active'));
     hint.classList.remove('loading');
     setDrawButton(null);
   }
 
   pickButtons.forEach(b => b.addEventListener('click', () => { if (picking) stopPick(); else startPick(); }));
+  map.on('zoomend', () => {
+    if (!picking) return;
+    greenItems.forEach(g => { if (g.item.kind === 'point') g.layer.setStyle(greenStyle(g.item, g.selected)); });
+  });
   map.on('moveend', () => {
     if (!picking) return;
     clearTimeout(pickTimer);
     pickTimer = setTimeout(loadGreen, 250);
   });
 
+  // Het groen wordt in vakken van ca. 350 × 330 m geladen: snel, parallel, en
+  // eenmaal geladen vakken worden bij verschuiven niet opnieuw opgehaald.
+  const TILE_W = 0.005, TILE_H = 0.003;
+  const MAX_VIEW_KM2 = 1.6;
+  const tilesDone = new Set();
+  const tilesBusy = new Set();
+  let pickQueue = [];
+  let pickActive = 0;
+  let pickOk = 0, pickFailed = 0;
+
+  function viewKm2() {
+    const b = map.getBounds();
+    const kmLat = (b.getNorth() - b.getSouth()) * 111.32;
+    const kmLng = (b.getEast() - b.getWest()) * 111.32 * Math.cos(b.getCenter().lat * Math.PI / 180);
+    return kmLat * kmLng;
+  }
+  const viewTooLarge = () => map.getZoom() < 16 || viewKm2() > MAX_VIEW_KM2;
+
   function renderPickStatus() {
+    pickLoading = pickActive + pickQueue.length;
     hint.classList.toggle('loading', pickLoading > 0);
     const verb = isMobile() ? 'Tik' : 'Klik';
     const sel = selectedItems();
     let html;
-    if (map.getZoom() < MIN_PICK_ZOOM) {
+    if (viewTooLarge() && !sel.length) {
       html = `Zoom verder in om het groen te tonen<small>Gras, beplanting, hagen en bomen verschijnen vanaf straatniveau</small>`;
     } else if (!sel.length) {
       html = pickLoading > 0 && !greenItems.size
@@ -613,40 +644,84 @@
     updateHintButtons();
   }
 
-  async function fetchCollection(src, bbox, signal) {
+  async function fetchCollection(src, bbox, signal, onPage) {
     const now = new Date().toISOString().slice(0, 19) + 'Z';   // alleen de actuele objecten
     let url = `${BGT}/${src.id}/items?f=json&limit=1000&bbox=${bbox}&datetime=${now}`;
-    const out = [];
-    for (let page = 0; url && page < 4; page++) {
+    for (let page = 0; url && page < 5; page++) {
       const res = await fetch(url, { signal });
       if (!res.ok) throw new Error(`${src.id}: ${res.status}`);
       const data = await res.json();
-      out.push(...(data.features || []));
+      onPage(data.features || []);
       url = (data.links || []).find(l => l.rel === 'next')?.href;
     }
-    return out;
   }
 
-  async function loadGreen() {
-    if (!picking) return;
-    if (map.getZoom() < MIN_PICK_ZOOM) { renderPickStatus(); return; }
-    const signal = pickCtrl.signal;
-    const b = map.getBounds().pad(0.15);
-    const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(v => v.toFixed(6)).join(',');
-    pickLoading++;
-    renderPickStatus();
-    const results = await Promise.allSettled(GREEN_SOURCES.map(async (src) => {
-      const feats = await fetchCollection(src, bbox, signal);
-      if (!picking || signal.aborted) return;
-      feats.forEach(f => addGreen(src, f));
-    }));
-    if (!picking || signal.aborted) return;
-    pickLoading--;
-    if (results.every(r => r.status === 'rejected')) pickMsg = 'PDOK is niet bereikbaar. Controleer je internetverbinding.';
-    renderPickStatus();
-    if (!greenItems.size) { pickMsg = 'Geen groen gevonden in dit gebied'; renderPickStatus(); }
-    pickMsg = '';
+  function tileBbox(key) {
+    const [i, j] = key.split('_').map(Number);
+    return [i * TILE_W, j * TILE_H, (i + 1) * TILE_W, (j + 1) * TILE_H].map(v => v.toFixed(6)).join(',');
   }
+
+  function loadGreen() {
+    if (!picking) return;
+    renderPickStatus();
+    if (viewTooLarge()) return;
+    const b = map.getBounds().pad(0.1);
+    const c = map.getCenter();
+    const keys = [];
+    for (let i = Math.floor(b.getWest() / TILE_W); i <= Math.floor(b.getEast() / TILE_W); i++) {
+      for (let j = Math.floor(b.getSouth() / TILE_H); j <= Math.floor(b.getNorth() / TILE_H); j++) {
+        const key = `${i}_${j}`;
+        if (!tilesDone.has(key) && !tilesBusy.has(key)) keys.push(key);
+      }
+    }
+    keys.forEach(key => {
+      tilesBusy.add(key);
+      const tile = { key, left: GREEN_SOURCES.length, failed: false };
+      GREEN_SOURCES.forEach(src => pickQueue.push({ src, tile }));
+    });
+    // Vakken in het midden van het scherm eerst
+    const dist = (job) => {
+      const [i, j] = job.tile.key.split('_').map(Number);
+      return Math.hypot((i + 0.5) * TILE_W - c.lng, ((j + 0.5) * TILE_H - c.lat) * 1.6);
+    };
+    pickQueue.sort((a, z) => dist(a) - dist(z));
+    pumpPick();
+  }
+
+  function pumpPick() {
+    const signal = pickCtrl.signal;
+    while (picking && pickActive < 8 && pickQueue.length) {
+      const job = pickQueue.shift();
+      pickActive++;
+      fetchCollection(job.src, tileBbox(job.tile.key), signal, (feats) => {
+        if (picking && !signal.aborted) feats.forEach(f => addGreen(job.src, f));
+      })
+        .then(() => { pickOk++; })
+        .catch(() => { if (!signal.aborted) { pickFailed++; job.tile.failed = true; } })
+        .finally(() => {
+          if (signal.aborted || !picking) return;
+          pickActive--;
+          if (--job.tile.left === 0) {
+            tilesBusy.delete(job.tile.key);
+            if (!job.tile.failed) tilesDone.add(job.tile.key);   // mislukte vakken later opnieuw
+          }
+          if (!pickActive && !pickQueue.length) {
+            if (!pickOk && pickFailed) pickMsg = 'PDOK is niet bereikbaar. Controleer je internetverbinding.';
+            else if (!greenItems.size) pickMsg = 'Geen groen gevonden in dit gebied';
+          }
+          renderPickStatus();
+          pickMsg = '';
+          pumpPick();
+        });
+    }
+    renderPickStatus();
+  }
+
+  $('#pickZoom').addEventListener('click', () => {
+    let z = Math.max(map.getZoom() + 1, 16);
+    map.setZoom(z);
+    map.once('zoomend', () => { if (viewTooLarge()) map.setZoom(map.getZoom() + 1); });
+  });
 
   function addGreen(src, f) {
     if (!f.geometry || f.properties.eind_registratie != null) return;
