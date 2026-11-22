@@ -39,6 +39,8 @@
 
   // Kijkmodus: geopend via een deelbare link (#deel=…) — alleen de kaart met het gedeelde vak
   const viewerMode = !!(window.Share && Share.payloadFromHash());
+  // Direct aanzetten, vóór de kaart wordt opgebouwd: anders rekent de kaart met de breedte inclusief menu
+  if (viewerMode) document.body.classList.add('viewer');
 
   // ---------------------------------------------------------------- Kaart
   // Eén vaste SVG-laag voor alle vlakken; hierin staan ook de opvulpatronen (werkt zo ook in Safari)
@@ -288,6 +290,8 @@
   // ---------------------------------------------------------------- Kijkmodus (deelbare link)
   async function startViewer() {
     document.body.classList.add('viewer');
+    map.invalidateSize();
+    window.addEventListener('resize', () => map.invalidateSize());
     const card = document.createElement('div');
     card.className = 'viewer-card';
     card.innerHTML = '<div class="vc-loading">Vak laden…</div>';
