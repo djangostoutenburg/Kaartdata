@@ -40,12 +40,13 @@
   // ---------------------------------------------------------------- Kaart
   // Eén vaste SVG-laag voor alle vlakken; hierin staan ook de opvulpatronen (werkt zo ook in Safari)
   const svgRenderer = L.svg({ padding: 0.5 });
-  const map = L.map('map', { zoomControl: true, doubleClickZoom: false, renderer: svgRenderer }).setView([52.1, 5.3], 8);
+  const MAX_ZOOM = 22;   // tot 21 scherpe PDOK-tegels, 22 uitvergroot voor precies tekenen
+  const map = L.map('map', { zoomControl: true, doubleClickZoom: false, renderer: svgRenderer, maxZoom: MAX_ZOOM }).setView([52.1, 5.3], 8);
   map.addLayer(svgRenderer);
 
   const pdok = (layer) => L.tileLayer(
     `https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/${layer}/EPSG:3857/{z}/{x}/{y}.png`,
-    { maxZoom: 19, maxNativeZoom: 19, attribution: 'Kaartgegevens &copy; <a href="https://www.kadaster.nl">Kadaster</a> / PDOK' });
+    { maxZoom: MAX_ZOOM, maxNativeZoom: 21, attribution: 'Kaartgegevens &copy; <a href="https://www.kadaster.nl">Kadaster</a> / PDOK' });
 
   const baseLayers = {
     'PDOK Standaard': pdok('standaard'),
@@ -53,13 +54,13 @@
     'PDOK Pastel': pdok('pastel'),
     'Luchtfoto (PDOK)': L.tileLayer(
       'https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg',
-      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Luchtfoto &copy; Beeldmateriaal.nl / PDOK' }),
+      { maxZoom: MAX_ZOOM, maxNativeZoom: 21, attribution: 'Luchtfoto &copy; Beeldmateriaal.nl / PDOK' }),
     'OpenStreetMap': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }),
+      { maxZoom: MAX_ZOOM, maxNativeZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }),
   };
   const overlays = {
     'Kadastrale percelen': L.tileLayer.wms('https://service.pdok.nl/kadaster/kadastralekaart/wms/v5_0', {
-      layers: 'Kadastralekaart', format: 'image/png', transparent: true, minZoom: 16, maxZoom: 21,
+      layers: 'Kadastralekaart', format: 'image/png', transparent: true, minZoom: 16, maxZoom: MAX_ZOOM,
       attribution: 'Kadastrale kaart &copy; Kadaster',
     }),
   };
