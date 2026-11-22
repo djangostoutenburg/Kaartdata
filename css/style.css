@@ -399,6 +399,10 @@ body.sidebar-collapsed #openSidebar { display: grid; }
 .color-field input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
 .color-field input[type=color]::-webkit-color-swatch { border: 0; border-radius: 5px; }
 .color-field .mono { font-size: 12.5px; color: var(--muted); text-transform: uppercase; }
+.fill-field { display: flex; align-items: center; gap: 8px; }
+.fill-field select { flex: 1; }
+#panel svg.fill-preview { width: 52px; height: 36px; flex: none; fill: none; stroke: none; }
+#fillPreview { stroke-width: 1.5; }
 .coords { margin: 0 0 14px; font-size: 11.5px; color: var(--faint); }
 .coords:empty { display: none; }
 .panel-actions { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }

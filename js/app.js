@@ -117,6 +117,44 @@
   }
   const iconFor = (f, selected) => f.props.category === 'Boom' ? treeIcon(colorOf(f), selected) : pinIcon(colorOf(f), selected);
 
+  // ---------------------------------------------------------------- Opvulpatronen (arcering, geruit, stippen…)
+  // Patronen worden één keer per type+kleur aangemaakt in de SVG-defs van de pagina.
+  const patternDefs = document.querySelector('svg defs');
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs) {
+    const el = document.createElementNS(SVGNS, tag);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    return el;
+  }
+  function patternUrl(type, color, tint) {
+    const id = `fp-${type}-${color.replace(/[^a-z0-9]/gi, '')}-${tint ? 1 : 0}`;
+    if (!document.getElementById(id)) {
+      const size = { dambord: 16, raster: 10, stippen: 10 }[type] || 8;
+      const pat = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: size, height: size });
+      if (type === 'diagonaal' || type === 'kruis') pat.setAttribute('patternTransform', 'rotate(45)');
+      pat.appendChild(svgEl('rect', { width: size, height: size, fill: color, 'fill-opacity': tint ? 0.22 : 0.1 }));
+      const line = (d, w) => pat.appendChild(svgEl('path', { d, stroke: color, 'stroke-width': w, fill: 'none' }));
+      if (type === 'diagonaal') line('M1 0V8', 2);
+      if (type === 'kruis') line('M1 0V8M0 1H8', 1.6);
+      if (type === 'raster') line('M0.5 0V10M0 0.5H10', 1.3);
+      if (type === 'horizontaal') line('M0 1H8', 2);
+      if (type === 'verticaal') line('M1 0V8', 2);
+      if (type === 'stippen') pat.appendChild(svgEl('circle', { cx: 5, cy: 5, r: 1.9, fill: color }));
+      if (type === 'dambord') {
+        pat.appendChild(svgEl('rect', { x: 0, y: 0, width: 8, height: 8, fill: color, 'fill-opacity': 0.5 }));
+        pat.appendChild(svgEl('rect', { x: 8, y: 8, width: 8, height: 8, fill: color, 'fill-opacity': 0.5 }));
+      }
+      patternDefs.appendChild(pat);
+    }
+    return `url(#${id})`;
+  }
+  // Vulling voor een object: { fillColor, fillOpacity }
+  function fillFor(fill, color, isAsset) {
+    if (fill === 'geen') return { fillColor: color, fillOpacity: 0 };
+    if (!fill || fill === 'effen') return { fillColor: color, fillOpacity: isAsset ? 0.45 : 0.2 };
+    return { fillColor: patternUrl(fill, color, isAsset), fillOpacity: 1 };
+  }
+
   function styleFor(f, selected) {
     const color = colorOf(f);
     const isLine = f.geometry.type.includes('LineString');
@@ -124,8 +162,7 @@
       color,
       weight: selected ? 5 : (isLine ? 4 : 2),
       opacity: 1,
-      fillColor: color,
-      fillOpacity: f.props.kind === 'asset' ? 0.45 : 0.2,
+      ...fillFor(isLine ? 'effen' : f.props.fill, color, f.props.kind === 'asset'),
       dashArray: f.props.status === 'Gepland' && !isLine ? '6 4' : null,
     };
   }
@@ -1024,7 +1061,10 @@
     form.status.value = f.props.status || 'Gepland';
     form.ref.value = f.props.ref || '';
     form.notes.value = f.props.notes || '';
+    form.fill.value = f.props.fill || 'effen';
+    $('#fillField').hidden = !/Polygon/.test(f.geometry.type) && f.shape !== 'Circle';
     form.color.value = colorOf(f);
+    updateFillPreview();
     renderPanelHead(f);
     $('#saveState').textContent = 'Wijzigingen worden automatisch bewaard';
     renderMeasure(f);
@@ -1084,6 +1124,7 @@
         ref: form.ref.value.trim(),
         notes: form.notes.value,
         color: form.color.value,
+        fill: form.fill.value,
       },
     });
     applyStyle(f);
@@ -1103,12 +1144,26 @@
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => saveForm(false), 500);
   }));
+  function updateFillPreview() {
+    const r = document.getElementById('fillPreview');
+    const color = form.color.value || '#0a6c8f';
+    const { fillColor, fillOpacity } = fillFor(form.fill.value, color, form.kind.value === 'asset');
+    r.setAttribute('fill', fillColor);
+    r.setAttribute('fill-opacity', fillOpacity);
+    r.setAttribute('stroke', color);
+  }
+  form.fill.addEventListener('change', () => {
+    const f = Store.feature(selectedId);
+    updateFillPreview();
+    if (f) { f.props.fill = form.fill.value; applyStyle(f); }
+  });
   // Kleur direct tonen tijdens kiezen
   form.color.addEventListener('input', () => {
     const f = Store.feature(selectedId);
     if (!f) return;
     f.props.color = form.color.value;
     applyStyle(f);
+    updateFillPreview();
     renderPanelHead(f);
   });
 
@@ -1258,6 +1313,7 @@
             status: pr.status || 'In beheer',
             ref: pr.ref || pr.kenmerk || pr.id || '',
             notes: pr.notes || pr.notities || pr.description || '',
+            ...(pr.fill || pr.opvulling ? { fill: pr.fill || pr.opvulling } : {}),
             color: pr.color || pr.kleur || p.color,
           },
         });
