@@ -579,3 +579,30 @@ body.viewer .leaflet-top.leaflet-left { top: 12px; }
   #map { position: relative; height: 172mm; border: 1px solid #999; }
   #printTitle { display: block; font: 600 15px var(--font); margin-bottom: 4mm; color: #000; }
 }
+
+/* ---------------------------------------------------------------- Wachtwoordtoegang */
+#gate { display: none; }
+html.locked #gate {
+  display: grid; place-items: center; position: fixed; inset: 0; z-index: 5000;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  background: var(--ink);
+  background-image: radial-gradient(circle at 20% 15%, rgba(10,108,143,.35), transparent 55%), radial-gradient(circle at 85% 90%, rgba(63,143,58,.22), transparent 50%);
+}
+html.locked #app, html.locked dialog, html.locked #toast { display: none !important; }
+.gate-card {
+  width: min(380px, 100%); display: flex; flex-direction: column; gap: 8px;
+  background: var(--surface); color: var(--text); border-radius: 16px; padding: 26px 24px 22px; box-shadow: var(--shadow-lg);
+}
+.gate-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.gate-brand h1 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
+.gate-brand p { margin: 0; color: var(--muted); font-size: 13px; }
+.gate-brand .brand-mark { width: 40px; height: 40px; border-radius: 10px; background: var(--accent); color: #fff; display: grid; place-items: center; }
+.gate-brand .brand-mark svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.gate-brand .brand-mark svg .fill { fill: currentColor; stroke: none; }
+.gate-card > label:first-of-type { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.gate-input { position: relative; }
+.gate-input input { height: 44px; padding-right: 70px; font-size: 16px; }
+.gate-show { position: absolute; right: 6px; top: 6px; height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: var(--surface-2); color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.gate-remember { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; margin: 4px 0 0; }
+.gate-remember input { width: 16px; height: 16px; margin: 0; }
+.gate-error { min-height: 18px; margin: 0; color: var(--danger); font-size: 13px; }

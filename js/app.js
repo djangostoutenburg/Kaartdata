@@ -48,6 +48,9 @@
   const MAX_ZOOM = 22;   // tot 21 scherpe PDOK-tegels, 22 uitvergroot voor precies tekenen
   const map = L.map('map', { zoomControl: true, doubleClickZoom: false, renderer: svgRenderer, maxZoom: MAX_ZOOM }).setView([52.1, 5.3], 8);
   map.addLayer(svgRenderer);
+  // De kaart past zich altijd aan als zijn vak van grootte verandert (menu in/uit, kijkweergave, venster)
+  if ('ResizeObserver' in window) new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById('map'));
+  window.addEventListener('load', () => map.invalidateSize());
 
   const pdok = (layer) => L.tileLayer(
     `https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/${layer}/EPSG:3857/{z}/{x}/{y}.png`,
@@ -470,6 +473,8 @@
     }
 
     if (multi) showAll(true); else show(feats[0], true);
+    // Na inloggen opnieuw passend inzoomen (de kaart was verborgen achter het inlogscherm)
+    document.addEventListener('kaartdata:unlocked', () => setTimeout(() => fitTo(current ? boundsOf([current]) : shared.getBounds()), 50));
   }
 
   if (viewerMode) { window.Kaartdata = { map }; startViewer(); return; }

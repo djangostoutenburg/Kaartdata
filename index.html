@@ -17,7 +17,15 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/geoman/leaflet-geoman.css">
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=20261122c">
+  <script>
+    // Wachtwoordtoegang: vergrendeld tenzij dit apparaat (of dit tabblad) al toegang heeft
+    (function () {
+      var ok = '597d6705380ef2d50bd67a8de3c31d694851cb839380cedaf6dfc74e7be144d7';
+      try { if (localStorage.getItem('kaartdata.toegang') === ok || sessionStorage.getItem('kaartdata.toegang') === ok) return; } catch (e) {}
+      document.documentElement.classList.add('locked');
+    })();
+  </script>
 </head>
 <body>
   <!-- Iconen -->
@@ -47,10 +55,31 @@
       <symbol id="i-pick" viewBox="0 0 24 24"><path d="M9 9l11 4.2-4.6 1.6L13.8 19.5z"/><path d="M4.5 4.5l2 2M9 2.5v2.8M2.5 9h2.8M13.2 4.2l-1.6 1.6M4.2 13.2l1.6-1.6"/></symbol>
       <symbol id="i-merge" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="10" height="10" rx="1"/><rect x="10.5" y="10.5" width="10" height="10" rx="1"/></symbol>
       <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
       <symbol id="i-next" viewBox="0 0 24 24"><path d="M4 12h13M13 7l5 5-5 5"/></symbol>
       <symbol id="i-empty" viewBox="0 0 48 48"><path d="M10 34l6-20 18 4 4 16z" stroke-dasharray="3 3"/><circle cx="10" cy="34" r="2.2" class="fill"/><circle cx="16" cy="14" r="2.2" class="fill"/><circle cx="34" cy="18" r="2.2" class="fill"/></symbol>
     </defs>
   </svg>
+
+  <div id="gate" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+    <form id="gateForm" class="gate-card" autocomplete="on">
+      <div class="gate-brand">
+        <div class="brand-mark"><svg><use href="#i-polygon"/></svg></div>
+        <div>
+          <h1 id="gateTitle">Kaartdata</h1>
+          <p>Projecten &amp; assets</p>
+        </div>
+      </div>
+      <label for="gatePassword">Wachtwoord</label>
+      <div class="gate-input">
+        <input id="gatePassword" name="password" type="password" autocomplete="current-password" required>
+        <button type="button" id="gateShow" class="gate-show">Toon</button>
+      </div>
+      <label class="gate-remember"><input id="gateRemember" type="checkbox" checked> Onthoud op dit apparaat</label>
+      <p id="gateError" class="gate-error" role="alert"></p>
+      <button id="gateSubmit" type="submit" class="btn primary block">Openen</button>
+    </form>
+  </div>
 
   <div id="app">
     <aside id="sidebar" aria-label="Projecten en objecten">
@@ -60,6 +89,7 @@
           <span class="brand-name">Kaartdata</span>
           <span class="brand-sub">Projecten &amp; assets</span>
         </div>
+        <button id="lockApp" class="icon-btn ghost" title="Vergrendelen" aria-label="Vergrendelen"><svg><use href="#i-lock"/></svg></button>
         <button id="toggleSidebar" class="icon-btn ghost" title="Zijbalk inklappen" aria-label="Zijbalk inklappen"><svg><use href="#i-chevron"/></svg></button>
       </header>
 
@@ -304,8 +334,9 @@
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="vendor/turf/turf.min.js"></script>
-  <script src="js/store.js"></script>
-  <script src="js/share.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/gate.js?v=20261122c"></script>
+  <script src="js/store.js?v=20261122c"></script>
+  <script src="js/share.js?v=20261122c"></script>
+  <script src="js/app.js?v=20261122c"></script>
 </body>
 </html>
