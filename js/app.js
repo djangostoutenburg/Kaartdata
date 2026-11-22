@@ -38,7 +38,10 @@
   const isMobile = () => window.matchMedia('(max-width: 820px)').matches;
 
   // ---------------------------------------------------------------- Kaart
-  const map = L.map('map', { zoomControl: true, doubleClickZoom: false }).setView([52.1, 5.3], 8);
+  // Eén vaste SVG-laag voor alle vlakken; hierin staan ook de opvulpatronen (werkt zo ook in Safari)
+  const svgRenderer = L.svg({ padding: 0.5 });
+  const map = L.map('map', { zoomControl: true, doubleClickZoom: false, renderer: svgRenderer }).setView([52.1, 5.3], 8);
+  map.addLayer(svgRenderer);
 
   const pdok = (layer) => L.tileLayer(
     `https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/${layer}/EPSG:3857/{z}/{x}/{y}.png`,
@@ -119,16 +122,22 @@
 
   // ---------------------------------------------------------------- Opvulpatronen (arcering, geruit, stippen…)
   // Patronen worden één keer per type+kleur aangemaakt in de SVG-defs van de pagina.
-  const patternDefs = document.querySelector('svg defs');
   const SVGNS = 'http://www.w3.org/2000/svg';
   function svgEl(tag, attrs) {
     const el = document.createElementNS(SVGNS, tag);
     Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
     return el;
   }
-  function patternUrl(type, color, tint) {
-    const id = `fp-${type}-${color.replace(/[^a-z0-9]/gi, '')}-${tint ? 1 : 0}`;
-    if (!document.getElementById(id)) {
+  // <defs> binnen een bepaalde <svg> (Safari tekent patronen alleen betrouwbaar vanuit dezelfde svg)
+  function defsIn(svg) {
+    let defs = svg.querySelector(':scope > defs');
+    if (!defs) { defs = svgEl('defs', {}); svg.insertBefore(defs, svg.firstChild); }
+    return defs;
+  }
+  const mapDefs = () => defsIn(svgRenderer._container);
+  function patternUrl(type, color, tint, defs = mapDefs(), prefix = 'fp') {
+    const id = `${prefix}-${type}-${color.replace(/[^a-z0-9]/gi, '')}-${tint ? 1 : 0}`;
+    if (!defs.querySelector(`#${id}`)) {
       const size = { dambord: 16, raster: 10, stippen: 10 }[type] || 8;
       const pat = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: size, height: size });
       if (type === 'diagonaal' || type === 'kruis') pat.setAttribute('patternTransform', 'rotate(45)');
@@ -144,15 +153,15 @@
         pat.appendChild(svgEl('rect', { x: 0, y: 0, width: 8, height: 8, fill: color, 'fill-opacity': 0.5 }));
         pat.appendChild(svgEl('rect', { x: 8, y: 8, width: 8, height: 8, fill: color, 'fill-opacity': 0.5 }));
       }
-      patternDefs.appendChild(pat);
+      defs.appendChild(pat);
     }
     return `url(#${id})`;
   }
   // Vulling voor een object: { fillColor, fillOpacity }
-  function fillFor(fill, color, isAsset) {
+  function fillFor(fill, color, isAsset, defs, prefix) {
     if (fill === 'geen') return { fillColor: color, fillOpacity: 0 };
     if (!fill || fill === 'effen') return { fillColor: color, fillOpacity: isAsset ? 0.45 : 0.2 };
-    return { fillColor: patternUrl(fill, color, isAsset), fillOpacity: 1 };
+    return { fillColor: patternUrl(fill, color, isAsset, defs, prefix), fillOpacity: 1 };
   }
 
   function styleFor(f, selected) {
@@ -1147,7 +1156,7 @@
   function updateFillPreview() {
     const r = document.getElementById('fillPreview');
     const color = form.color.value || '#0a6c8f';
-    const { fillColor, fillOpacity } = fillFor(form.fill.value, color, form.kind.value === 'asset');
+    const { fillColor, fillOpacity } = fillFor(form.fill.value, color, form.kind.value === 'asset', defsIn(r.ownerSVGElement), 'fpp');
     r.setAttribute('fill', fillColor);
     r.setAttribute('fill-opacity', fillOpacity);
     r.setAttribute('stroke', color);
