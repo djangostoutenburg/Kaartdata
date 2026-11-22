@@ -37,6 +37,9 @@
   const icon = (id) => `<svg><use href="#${id}"/></svg>`;
   const isMobile = () => window.matchMedia('(max-width: 820px)').matches;
 
+  // Kijkmodus: geopend via een deelbare link (#deel=…) — alleen de kaart met het gedeelde vak
+  const viewerMode = !!(window.Share && Share.payloadFromHash());
+
   // ---------------------------------------------------------------- Kaart
   // Eén vaste SVG-laag voor alle vlakken; hierin staan ook de opvulpatronen (werkt zo ook in Safari)
   const svgRenderer = L.svg({ padding: 0.5 });
@@ -69,17 +72,18 @@
   baseLayers[savedBase].addTo(map);
   L.control.layers(baseLayers, overlays, { position: 'topright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
-  map.on('baselayerchange', (e) => { Store.state.baseLayer = e.name; Store.save(); });
+  map.on('baselayerchange', (e) => { if (viewerMode) return; Store.state.baseLayer = e.name; Store.save(); });
 
-  if (Store.state.view) map.setView(Store.state.view.center, Store.state.view.zoom);
+  if (Store.state.view && !viewerMode) map.setView(Store.state.view.center, Store.state.view.zoom);
   map.on('moveend', () => {
+    if (viewerMode) return;   // een kijklink verandert niets aan je eigen kaart
     Store.state.view = { center: map.getCenter(), zoom: map.getZoom() };
     Store.save();
   });
 
   // Geoman: alleen de bewerk-knoppen op de kaart; tekenen gaat via de zijbalk.
   map.pm.setLang('nl');
-  map.pm.addControls({
+  if (!viewerMode) map.pm.addControls({
     position: 'topleft',
     drawMarker: false, drawCircleMarker: false, drawPolyline: false, drawRectangle: false,
     drawPolygon: false, drawCircle: false, drawText: false,
@@ -256,6 +260,97 @@
     if (m.length != null) rows.push(tile('Lengte', lenParts(m.length)));
     return rows.join('');
   }
+
+  // ---------------------------------------------------------------- Kijkmodus (deelbare link)
+  async function startViewer() {
+    document.body.classList.add('viewer');
+    const card = document.createElement('div');
+    card.className = 'viewer-card';
+    card.innerHTML = '<div class="vc-loading">Vak laden…</div>';
+    $('#mapWrap').appendChild(card);
+
+    let feats;
+    try {
+      feats = await Share.decode(Share.payloadFromHash());
+    } catch (err) {
+      card.innerHTML = `<div class="vc-error"><strong>Deze link kan niet worden geopend</strong><span>${esc(/^Deze /.test(err.message || '') ? err.message : 'De link is ongeldig of onvolledig. Vraag de afzender om hem opnieuw te sturen.')}</span></div>`;
+      return;
+    }
+
+    const shared = L.featureGroup().addTo(map);
+    feats.forEach(f => {
+      const layer = featureToLayer(f);
+      layer.addTo(shared);
+      if (layer instanceof L.Marker) layer.setIcon(iconFor(f));
+      else layer.setStyle(styleFor(f, false));
+      if (f.props.name) layer.bindTooltip(esc(f.props.name), { permanent: true, direction: layer instanceof L.Marker ? 'top' : 'center', className: 'feature-label' });
+    });
+
+    const f = feats[0];
+    const m = measure(f);
+    const tiles = [];
+    if (m.area != null) tiles.push(['Oppervlakte', areaParts(m.area)]);
+    if (m.perimeter != null) tiles.push(['Omtrek', lenParts(m.perimeter)]);
+    if (m.length != null) tiles.push(['Lengte', lenParts(m.length)]);
+    let c = null;
+    try { c = turf.centroid(f.geometry).geometry.coordinates; } catch (e) { /* */ }
+    const color = f.props.color || '#0a6c8f';
+    const title = feats.length > 1 ? `${feats.length} objecten` : (f.props.name || SHAPE_LABEL[shapeOf(f)] || 'Gedeeld vak');
+    document.title = `${title} – Kaartdata`;
+
+    card.innerHTML = `
+      <div class="vc-head">
+        <span class="vc-icon" style="color:${esc(color)};background:${esc(color)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
+        <div class="vc-titles">
+          <span class="vc-name">${esc(title)}</span>
+          <span class="vc-meta">${[f.props.ref && `<span class="mono vc-ref">${esc(f.props.ref)}</span>`, esc(f.props.category), esc(f.props.status)].filter(Boolean).join(' · ')}</span>
+        </div>
+      </div>
+      ${tiles.length ? `<div class="vc-measure">${tiles.map(([l, [v, u]]) => `<div><span>${l}</span><strong class="mono">${v} <small>${u}</small></strong></div>`).join('')}</div>` : ''}
+      <div class="vc-actions">
+        <button type="button" class="btn" id="vcFit"><svg><use href="#i-target"/></svg>Toon vak</button>
+        ${c ? `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${c[1].toFixed(6)},${c[0].toFixed(6)}"><svg><use href="#i-next"/></svg>Route</a>` : ''}
+        <button type="button" class="btn" id="vcLocate"><svg><use href="#i-gps"/></svg>Mijn locatie</button>
+      </div>
+      <p class="vc-foot">Kijklink · gemaakt met Kaartdata</p>`;
+
+    document.documentElement.style.setProperty('--vc-h', `${card.offsetHeight}px`);
+    const fit = () => {
+      const b = shared.getBounds();
+      if (!b.isValid()) return;
+      const pad = card.getBoundingClientRect().height;
+      map.fitBounds(b, {
+        paddingTopLeft: [40, 60],
+        paddingBottomRight: [40, (isMobile() ? pad : 0) + 40],
+        maxZoom: shared.getLayers().some(l => l.getBounds) ? 20 : 19,
+      });
+    };
+    fit();
+    $('#vcFit').addEventListener('click', fit);
+
+    let pos = null;
+    $('#vcLocate').addEventListener('click', () => {
+      if (!('geolocation' in navigator)) return;
+      navigator.geolocation.getCurrentPosition((p) => {
+        const ll = L.latLng(p.coords.latitude, p.coords.longitude);
+        if (!pos) {
+          pos = L.layerGroup([
+            L.circle(ll, { radius: p.coords.accuracy, color: '#1a73e8', weight: 1, fillOpacity: 0.12, interactive: false }),
+            L.circleMarker(ll, { radius: 7, color: '#fff', weight: 2.5, fillColor: '#1a73e8', fillOpacity: 1, interactive: false }),
+          ]).addTo(map);
+        } else {
+          pos.getLayers()[0].setLatLng(ll).setRadius(p.coords.accuracy);
+          pos.getLayers()[1].setLatLng(ll);
+        }
+        map.fitBounds(shared.getBounds().extend(ll), { padding: [60, 60], paddingBottomRight: [60, (isMobile() ? card.getBoundingClientRect().height : 0) + 60] });
+      }, () => alert('Je locatie kon niet worden bepaald. Sta locatie toe in je browserinstellingen.'), { enableHighAccuracy: true, timeout: 15000 });
+    });
+  }
+
+  if (viewerMode) { startViewer(); return; }
+
+  // Opent iemand in de app een nieuwe kijklink, laad dan de kijkweergave
+  window.addEventListener('hashchange', () => { if (Share.payloadFromHash()) location.reload(); });
 
   // ---------------------------------------------------------------- Lagen
   function attachLayer(f) {
@@ -1220,6 +1315,50 @@
     const cats = [...new Set([...DEFAULT_CATEGORIES, ...used])].sort((a, b) => a.localeCompare(b, 'nl'));
     $('#categoryList').innerHTML = cats.map(c => `<option value="${esc(c)}">`).join('');
   }
+
+
+  // ---------------------------------------------------------------- Delen (kijklink)
+  const shareDialog = $('#shareDialog');
+  async function openShare(f) {
+    flushSave();
+    let url;
+    try {
+      url = await Share.linkFor([f]);
+    } catch (err) {
+      toast('Delen lukte niet: ' + err.message);
+      return;
+    }
+    $('#shareUrl').value = url;
+    $('#shareTitle').textContent = `Kijklink voor “${f.props.name || 'dit vak'}”`;
+    const kb = (url.length / 1024).toFixed(1);
+    $('#shareInfo').textContent = url.length > 8000
+      ? `Lange link (${kb} kB) door de gedetailleerde vorm. Werkt in browsers, maar sommige apps knippen lange links af; stuur hem dan via mail.`
+      : `Linklengte ${url.length} tekens.`;
+    $('#shareNative').hidden = !navigator.share;
+    shareDialog.showModal();
+    $('#shareUrl').select();
+  }
+  $('#shareFeature').addEventListener('click', () => {
+    const f = Store.feature(selectedId);
+    if (f) openShare(f);
+  });
+  $('#shareCopy').addEventListener('click', async () => {
+    const input = $('#shareUrl');
+    try {
+      await navigator.clipboard.writeText(input.value);
+    } catch (e) {
+      input.select();
+      document.execCommand && document.execCommand('copy');
+    }
+    toast('Link gekopieerd');
+  });
+  $('#shareNative').addEventListener('click', async () => {
+    const f = Store.feature(selectedId);
+    try {
+      await navigator.share({ title: `${f?.props.name || 'Vak'} – Kaartdata`, text: f?.props.name || 'Bekijk dit vak op de kaart', url: $('#shareUrl').value });
+    } catch (e) { /* geannuleerd */ }
+  });
+  $('#shareOpen').addEventListener('click', () => window.open($('#shareUrl').value, '_blank', 'noopener'));
 
   // ---------------------------------------------------------------- Import / export
   function download(filename, content, type) {

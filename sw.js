@@ -1,9 +1,9 @@
 /* Service worker: houdt de app zelf beschikbaar (ook bij slecht bereik).
  * Eigen bestanden: eerst netwerk (zodat updates direct doorkomen), anders uit cache.
  * Kaarttegels en zoekdiensten worden niet opgeslagen. */
-const CACHE = 'kaartdata-v1';
+const CACHE = 'kaartdata-v2';
 const APP = [
-  './', 'index.html', 'css/style.css', 'js/store.js', 'js/app.js', 'manifest.webmanifest',
+  './', 'index.html', 'css/style.css', 'js/store.js', 'js/share.js', 'js/app.js', 'manifest.webmanifest',
   'vendor/leaflet/leaflet.css', 'vendor/leaflet/leaflet.js',
   'vendor/geoman/leaflet-geoman.css', 'vendor/geoman/leaflet-geoman.min.js',
   'vendor/turf/turf.min.js', 'icons/icon-192.png',

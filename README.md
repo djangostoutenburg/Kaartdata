@@ -21,6 +21,7 @@ Je kunt de map ook hosten via GitHub Pages (Settings → Pages → branch kiezen
 - **Achtergronden** – PDOK Standaard, Grijs, Pastel, Luchtfoto en OpenStreetMap, plus kadastrale percelen als overlay (inzoomen tot ±niveau 16).
 - **Zoeken** – in de zoekbalk bovenaan op kenmerk of naam van je eigen objecten (in alle projecten; hoofdletters, spaties en streepjes maken niet uit, dus `gr201` vindt `GR-201`) en op adres, postcode of plaats via de PDOK Locatieserver.
 - **Zoeken & filteren** in de objectenlijst.
+- **Delen als kijklink** – met *Delen* in het objectpaneel maak je een link naar één vak. Wie hem opent, ziet alleen de kaart met dat vak (naam, kenmerk, oppervlakte, route) en kan niets wijzigen. De vorm zit gecomprimeerd in de link zelf (na het `#`), er wordt niets online opgeslagen.
 - **Export** – GeoJSON (inclusief oppervlakte/lengte) en CSV (opent in Excel); **import** van GeoJSON (WGS84).
 - **Print / PDF** – kaart afdrukken of als PDF opslaan (A4 liggend).
 - Labels aan/uit met de knop **Aa**.
