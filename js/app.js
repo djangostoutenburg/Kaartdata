@@ -209,6 +209,7 @@
 
   function wireLayer(layer) {
     layer.on('click', (e) => {
+      if (picking) return;   // klik gaat door naar de kaart (vlak selecteren)
       if (map.pm.globalRemovalModeEnabled && map.pm.globalRemovalModeEnabled()) return;
       L.DomEvent.stopPropagation(e);
       select(layer.featureId);
@@ -232,7 +233,7 @@
   }
 
   // Nieuw getekend object
-  function createFromLayer(shape, layer) {
+  function createFromLayer(shape, layer, extraProps) {
     const p = Store.activeProject();
     if (!p) { layer.remove(); return null; }
     const count = Store.features(p.id).length + 1;
@@ -249,6 +250,7 @@
         ref: '',
         notes: '',
         color: p.color,
+        ...(extraProps || {}),
       },
     });
     layer.remove();          // vervangen door onze eigen laag
@@ -286,7 +288,10 @@
     if (selectedId === id) select(id);
   });
 
-  map.on('click', () => { if (!map.pm.globalDrawModeEnabled() && !editLayer) closePanel(); });
+  map.on('click', (e) => {
+    if (picking) { pickAt(e.latlng); return; }
+    if (!map.pm.globalDrawModeEnabled() && !editLayer) closePanel();
+  });
 
   // ---------------------------------------------------------------- Tekenknoppen
   const drawButtons = document.querySelectorAll('[data-draw]');
@@ -309,6 +314,9 @@
     $('#drawFinish').disabled = multi && n < (drawShape === 'Polygon' ? 3 : 2);
     $('#drawGps').hidden = !(multi || drawShape === 'Marker') || !('geolocation' in navigator);
     $('#cancelDraw').hidden = !!editLayer;
+    $('#pickNext').hidden = !picking || pickCandidates.length < 2;
+    $('#pickAccept').hidden = !picking || !pickCandidates.length;
+    if (picking && pickCandidates.length > 1) $('#pickNext').querySelector('span').textContent = `Andere (${pickIndex + 1}/${pickCandidates.length})`;
     if (multi && n > 0) {
       const need = drawShape === 'Polygon' ? 3 : 2;
       $('#drawHintText').textContent = n < need
@@ -320,8 +328,8 @@
   function setDrawButton(shape) {
     drawShape = shape;
     drawButtons.forEach(b => b.classList.toggle('active', b.dataset.draw === shape));
-    hint.hidden = !shape && !editLayer;
-    document.body.classList.toggle('drawing', !!shape || !!editLayer);
+    hint.hidden = !shape && !editLayer && !picking;
+    document.body.classList.toggle('drawing', !!shape || !!editLayer || picking);
     if (shape) $('#drawHintText').textContent = (isMobile() ? DRAW_HINT_TOUCH : DRAW_HINT)[shape] || '';
     updateHintButtons();
   }
@@ -333,6 +341,7 @@
     const shape = btn.dataset.draw;
     if (map.pm.Draw[shape]?.enabled()) { stopDrawing(); return; }
     stopEditing();
+    stopPick();
     closePanel();
     const color = Store.activeProject().color;
     map.pm.enableDraw(shape, {
@@ -382,13 +391,14 @@
       btn.disabled = false;
     }
   });
-  $('#cancelDraw').addEventListener('click', () => { if (editLayer) stopEditing(); else stopDrawing(); });
+  $('#cancelDraw').addEventListener('click', () => { if (picking) stopPick(); else if (editLayer) stopEditing(); else stopDrawing(); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { if (editLayer) stopEditing(); else stopDrawing(); }
+    if (e.key === 'Escape') { if (picking) stopPick(); else if (editLayer) stopEditing(); else stopDrawing(); }
   });
 
   // Vorm bewerken (hoekpunten slepen) — op telefoon met inklapbaar paneel
   function startEditing(layer) {
+    stopPick();
     stopDrawing();
     editLayer = layer;
     layer.pm.enable({ allowSelfIntersection: false, draggable: true });
@@ -458,6 +468,173 @@
     } finally {
       btn.classList.remove('busy');
     }
+  });
+
+  // ---------------------------------------------------------------- Selecteren uit kaart (PDOK: BGT + Kadaster)
+  const BGT = 'https://api.pdok.nl/lv/bgt/ogc/v1/collections';
+  const BRK = 'https://api.pdok.nl/kadaster/brk-kadastrale-kaart/ogc/v1/collections';
+  const cap = (t) => t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
+  const COLORS = { groen: '#3f8f3a', water: '#2f6fd6', weg: '#5b6778', gebouw: '#b4572b', perceel: '#6a4fc2' };
+
+  // Per bron: hoe we het vlak benoemen en indelen
+  const PICK_SOURCES = [
+    { id: 'begroeidterreindeel', url: `${BGT}/begroeidterreindeel/items`, describe: (p) => {
+        const t = p.plus_fysiek_voorkomen || p.fysiek_voorkomen;
+        return { name: cap(t) || 'Begroeid terrein', category: 'Groen', color: COLORS.groen, kind: 'gebied', source: 'BGT begroeid terreindeel' };
+      } },
+    { id: 'onbegroeidterreindeel', url: `${BGT}/onbegroeidterreindeel/items`, describe: (p) => {
+        const t = p.plus_fysiek_voorkomen || p.fysiek_voorkomen;
+        return { name: cap(t) || 'Onbegroeid terrein', category: p.fysiek_voorkomen === 'erf' ? 'Erf' : 'Verharding', color: COLORS.weg, kind: 'gebied', source: 'BGT onbegroeid terreindeel' };
+      } },
+    { id: 'wegdeel', url: `${BGT}/wegdeel/items`, describe: (p) => ({
+        name: cap(p.plus_functie || p.functie) || 'Wegdeel', category: 'Weg', color: COLORS.weg, kind: 'gebied',
+        extra: [p.fysiek_voorkomen, p.plus_fysiek_voorkomen].filter(Boolean).join(', '), source: 'BGT wegdeel' }) },
+    { id: 'ondersteunendwegdeel', url: `${BGT}/ondersteunendwegdeel/items`, describe: (p) => {
+        const groen = /groen|gras|begroeid/.test(`${p.fysiek_voorkomen} ${p.plus_fysiek_voorkomen}`);
+        return { name: cap(p.plus_functie || p.functie) || 'Ondersteunend wegdeel', category: groen ? 'Groen' : 'Weg', color: groen ? COLORS.groen : COLORS.weg, kind: 'gebied',
+          extra: [p.fysiek_voorkomen, p.plus_fysiek_voorkomen].filter(Boolean).join(', '), source: 'BGT ondersteunend wegdeel' };
+      } },
+    { id: 'waterdeel', url: `${BGT}/waterdeel/items`, describe: (p) => ({
+        name: cap(p.plus_type || p.type) || 'Water', category: 'Water', color: COLORS.water, kind: 'gebied', source: 'BGT waterdeel' }) },
+    { id: 'ondersteunendwaterdeel', url: `${BGT}/ondersteunendwaterdeel/items`, describe: (p) => ({
+        name: cap(p.plus_type || p.type) || 'Oever', category: 'Water', color: COLORS.water, kind: 'gebied', source: 'BGT ondersteunend waterdeel' }) },
+    { id: 'pand', url: `${BGT}/pand/items`, describe: (p) => ({
+        name: 'Gebouw', category: 'Gebouw', color: COLORS.gebouw, kind: 'asset',
+        ref: p.bag_pnd ? `BAG ${p.bag_pnd}` : '', source: 'BGT pand' }) },
+    { id: 'overbruggingsdeel', url: `${BGT}/overbruggingsdeel/items`, describe: (p) => ({
+        name: 'Brug', category: 'Kunstwerk', color: COLORS.weg, kind: 'asset', source: 'BGT overbruggingsdeel' }) },
+    { id: 'perceel', url: `${BRK}/perceel/items`, describe: (p) => {
+        const code = [p.kadastrale_gemeente_waarde, p.sectie, p.perceelnummer].filter(v => v != null && v !== '').join(' ');
+        return { name: `Perceel ${code}`.trim(), category: 'Perceel', color: COLORS.perceel, kind: 'gebied', ref: code,
+          extra: p.kadastrale_grootte_waarde ? `kadastrale grootte ${nf(p.kadastrale_grootte_waarde)} m²` : '', source: 'Kadaster (BRK)' };
+      }, current: (p) => !p.status_historie_waarde || p.status_historie_waarde === 'Geldig' },
+  ];
+
+  let picking = false;
+  let pickCandidates = [];
+  let pickIndex = 0;
+  let pickLayer = null;
+  let pickCtrl = null;
+  const pickButtons = document.querySelectorAll('[data-pick]');
+
+  function startPick() {
+    if (!Store.activeProject()) { toast('Maak eerst een project aan'); return; }
+    stopDrawing();
+    stopEditing();
+    closePanel();
+    picking = true;
+    pickCandidates = [];
+    pickButtons.forEach(b => b.classList.add('active'));
+    hint.hidden = false;
+    document.body.classList.add('drawing');
+    $('#drawHintText').innerHTML = `${isMobile() ? 'Tik' : 'Klik'} op een grasveld, pad, gebouw, water of perceel`;
+    updateHintButtons();
+    if (map.getZoom() < 16) toast('Zoom ver genoeg in om een vlak precies te kiezen');
+  }
+
+  function clearPickPreview() {
+    if (pickLayer) { pickLayer.remove(); pickLayer = null; }
+  }
+
+  function stopPick() {
+    if (!picking) return;
+    picking = false;
+    pickCtrl?.abort();
+    clearPickPreview();
+    pickCandidates = [];
+    pickButtons.forEach(b => b.classList.remove('active'));
+    hint.classList.remove('loading');
+    setDrawButton(null);
+  }
+
+  pickButtons.forEach(b => b.addEventListener('click', () => { if (picking) stopPick(); else startPick(); }));
+
+  async function fetchSource(src, latlng, signal) {
+    const d = 0.00002; // ± 1,5 m rond het getikte punt
+    const bbox = [latlng.lng - d, latlng.lat - d, latlng.lng + d, latlng.lat + d].map(v => v.toFixed(7)).join(',');
+    const res = await fetch(`${src.url}?f=json&limit=100&bbox=${bbox}`, { signal });
+    if (!res.ok) throw new Error(`${src.id}: ${res.status}`);
+    const data = await res.json();
+    const pt = turf.point([latlng.lng, latlng.lat]);
+    return (data.features || [])
+      .filter(f => f.geometry && /Polygon/.test(f.geometry.type))
+      .filter(f => (src.current ? src.current(f.properties) : f.properties.eind_registratie == null))
+      .filter(f => { try { return turf.booleanPointInPolygon(pt, f); } catch (e) { return false; } })
+      .map(f => {
+        // Eén-delige multipolygonen omzetten naar een gewone polygoon (makkelijker bewerken)
+        let geometry = f.geometry;
+        if (geometry.type === 'MultiPolygon' && geometry.coordinates.length === 1) {
+          geometry = { type: 'Polygon', coordinates: geometry.coordinates[0] };
+        }
+        return { geometry, area: turf.area(geometry), info: src.describe(f.properties), id: f.properties.lokaal_id || f.properties.identificatie_lokaal_id || f.id };
+      });
+  }
+
+  async function pickAt(latlng) {
+    pickCtrl?.abort();
+    pickCtrl = new AbortController();
+    const signal = pickCtrl.signal;
+    clearPickPreview();
+    pickCandidates = [];
+    hint.classList.add('loading');
+    $('#drawHintText').textContent = 'Vlakken zoeken';
+    updateHintButtons();
+    const results = await Promise.allSettled(PICK_SOURCES.map(src => fetchSource(src, latlng, signal)));
+    if (signal.aborted || !picking) return;
+    hint.classList.remove('loading');
+    const found = results.filter(r => r.status === 'fulfilled').flatMap(r => r.value);
+    const failed = results.filter(r => r.status === 'rejected').length;
+    // Kleinste vlak eerst: dat is meestal het grasveld/pad waar je op tikte, het perceel komt daarna
+    pickCandidates = found.sort((a, b) => a.area - b.area);
+    pickIndex = 0;
+    if (!pickCandidates.length) {
+      $('#drawHintText').innerHTML = failed === PICK_SOURCES.length
+        ? 'PDOK is niet bereikbaar. Controleer je internetverbinding.'
+        : 'Geen vlak gevonden op deze plek. Tik op een andere plek.';
+      updateHintButtons();
+      return;
+    }
+    showCandidate();
+  }
+
+  function showCandidate() {
+    clearPickPreview();
+    const c = pickCandidates[pickIndex];
+    pickLayer = L.geoJSON(c.geometry, {
+      pmIgnore: true, interactive: false,
+      style: { color: c.info.color, weight: 3, fillColor: c.info.color, fillOpacity: 0.35, dashArray: '6 4' },
+    }).addTo(map);
+    const [v, u] = areaParts(c.area);
+    $('#drawHintText').innerHTML = `<strong>${esc(c.info.name)}</strong> · ${v} ${u}<small>${esc([c.info.extra, c.info.source].filter(Boolean).join(' · '))}</small>`;
+    updateHintButtons();
+    // Zorg dat het hele vlak in beeld is (rekening houdend met de balk onderin op telefoon)
+    const b = pickLayer.getBounds();
+    if (!map.getBounds().contains(b)) {
+      map.fitBounds(b, { paddingTopLeft: [40, 80], paddingBottomRight: [40, isMobile() ? 200 : 60], maxZoom: map.getZoom() });
+    }
+  }
+
+  $('#pickNext').addEventListener('click', () => {
+    if (!pickCandidates.length) return;
+    pickIndex = (pickIndex + 1) % pickCandidates.length;
+    showCandidate();
+  });
+
+  $('#pickAccept').addEventListener('click', () => {
+    const c = pickCandidates[pickIndex];
+    if (!c) return;
+    const info = c.info;
+    const layer = L.GeoJSON.geometryToLayer({ type: 'Feature', geometry: c.geometry, properties: {} });
+    stopPick();
+    createFromLayer('Polygon', layer, {
+      name: info.name,
+      kind: info.kind,
+      category: info.category,
+      ref: info.ref || '',
+      color: info.color,
+      status: 'In beheer',
+      notes: `Overgenomen uit ${info.source}${c.id ? ` (id ${c.id})` : ''} op ${new Date().toLocaleDateString('nl-NL')}.${info.extra ? `\n${cap(info.extra)}.` : ''}`,
+    });
   });
 
   // ---------------------------------------------------------------- Projecten
