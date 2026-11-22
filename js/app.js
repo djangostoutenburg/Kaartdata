@@ -311,66 +311,144 @@
         if (f.geometry) notice = 'De exacte vorm kon niet bij de BGT worden opgehaald; er wordt een vereenvoudigde vorm getoond.';
       }
     }));
+    const sharedTitle = feats.title || '';
     feats = feats.filter(f => f.geometry);
+    feats.title = sharedTitle;
     if (!feats.length) {
       card.innerHTML = '<div class="vc-error"><strong>Dit vak kon niet worden geladen</strong><span>Het vak is niet (meer) gevonden in de BGT, of PDOK is niet bereikbaar. Probeer het later opnieuw.</span></div>';
       return;
     }
 
     const shared = L.featureGroup().addTo(map);
+    const layerOf = new Map();
     feats.forEach(f => {
       const layer = featureToLayer(f);
       layer.addTo(shared);
+      layerOf.set(f, layer);
       if (layer instanceof L.Marker) layer.setIcon(iconFor(f));
       else layer.setStyle(styleFor(f, false));
-      if (f.props.name) layer.bindTooltip(esc(f.props.name), { permanent: true, direction: layer instanceof L.Marker ? 'top' : 'center', className: 'feature-label' });
+      layer.on('click', (e) => { L.DomEvent.stop(e); show(f, true); });
     });
 
-    const f = feats[0];
-    const m = measure(f);
-    const tiles = [];
-    if (m.area != null) tiles.push(['Oppervlakte', areaParts(m.area)]);
-    if (m.perimeter != null) tiles.push(['Omtrek', lenParts(m.perimeter)]);
-    if (m.length != null) tiles.push(['Lengte', lenParts(m.length)]);
-    let c = null;
-    try { c = turf.centroid(f.geometry).geometry.coordinates; } catch (e) { /* */ }
-    const color = f.props.color || '#0a6c8f';
-    const title = feats.length > 1 ? `${feats.length} objecten` : (f.props.name || SHAPE_LABEL[shapeOf(f)] || 'Gedeeld vak');
-    document.title = `${title} – Kaartdata`;
-
-    card.innerHTML = `
-      <div class="vc-head">
-        <span class="vc-icon" style="color:${esc(color)};background:${esc(color)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
-        <div class="vc-titles">
-          <span class="vc-name">${esc(title)}</span>
-          <span class="vc-meta">${[f.props.ref && `<span class="mono vc-ref">${esc(f.props.ref)}</span>`, esc(f.props.category), esc(f.props.status)].filter(Boolean).join(' · ')}</span>
-        </div>
-      </div>
-      ${tiles.length ? `<div class="vc-measure">${tiles.map(([l, [v, u]]) => `<div><span>${l}</span><strong class="mono">${v} <small>${u}</small></strong></div>`).join('')}</div>` : ''}
-      <div class="vc-actions">
-        <button type="button" class="btn" id="vcFit"><svg><use href="#i-target"/></svg>Toon vak</button>
-        ${c ? `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${c[1].toFixed(6)},${c[0].toFixed(6)}"><svg><use href="#i-next"/></svg>Route</a>` : ''}
-        <button type="button" class="btn" id="vcLocate"><svg><use href="#i-gps"/></svg>Mijn locatie</button>
-      </div>
-      ${notice ? `<p class="vc-notice">${esc(notice)}</p>` : ''}
-      <p class="vc-foot">Kijklink · gemaakt met Kaartdata</p>`;
-
-    document.documentElement.style.setProperty('--vc-h', `${card.offsetHeight}px`);
-    const fit = () => {
-      const b = shared.getBounds();
-      if (!b.isValid()) return;
-      const pad = card.getBoundingClientRect().height;
-      map.fitBounds(b, {
-        paddingTopLeft: [40, 60],
-        paddingBottomRight: [40, (isMobile() ? pad : 0) + 40],
-        maxZoom: shared.getLayers().some(l => l.getBounds) ? 20 : 19,
+    const multi = feats.length > 1;
+    // Namen op de kaart: altijd bij weinig vakken, anders pas vanaf straatniveau (anders overlappen ze)
+    const labelAll = feats.length <= 5;
+    function updateLabels() {
+      const on = labelAll || map.getZoom() >= 18;
+      feats.forEach(f => {
+        const l = layerOf.get(f);
+        l.unbindTooltip();
+        if (!f.props.name) return;
+        l.bindTooltip(esc(f.props.name), on
+          ? { permanent: true, direction: l instanceof L.Marker ? 'top' : 'center', className: 'feature-label' }
+          : { direction: 'top', sticky: true });
       });
-    };
-    fit();
-    $('#vcFit').addEventListener('click', fit);
-
+    }
+    updateLabels();
+    map.on('zoomend', updateLabels);
+    const projectTitle = feats.title || (multi ? `${feats.length} vakken` : '');
+    document.title = `${projectTitle || feats[0].props.name || 'Gedeeld vak'} – Kaartdata`;
+    let current = null;
     let pos = null;
-    $('#vcLocate').addEventListener('click', () => {
+
+    const boundsOf = (list) => {
+      const b = L.latLngBounds([]);
+      list.forEach(f => { const l = layerOf.get(f); if (l.getBounds) b.extend(l.getBounds()); else b.extend(l.getLatLng()); });
+      return b;
+    };
+    const fitTo = (b) => {
+      if (!b.isValid()) return;
+      const pad = isMobile() ? card.getBoundingClientRect().height : 0;
+      map.fitBounds(b, { paddingTopLeft: [40, 60], paddingBottomRight: [40, pad + 40], maxZoom: 20 });
+    };
+    const measureTiles = (m) => {
+      const tiles = [];
+      if (m.area) tiles.push(['Oppervlakte', areaParts(m.area)]);
+      if (m.perimeter) tiles.push(['Omtrek', lenParts(m.perimeter)]);
+      if (m.length) tiles.push(['Lengte', lenParts(m.length)]);
+      return tiles.length ? `<div class="vc-measure">${tiles.map(([l, [v, u]]) => `<div><span>${l}</span><strong class="mono">${v} <small>${u}</small></strong></div>`).join('')}</div>` : '';
+    };
+    const locateBtn = '<button type="button" class="btn" data-vc="locate"><svg><use href="#i-gps"/></svg>Mijn locatie</button>';
+    const foot = `${notice ? `<p class="vc-notice">${esc(notice)}</p>` : ''}<p class="vc-foot">Kijklink · gemaakt met Kaartdata</p>`;
+
+    function highlight(f) {
+      feats.forEach(x => {
+        const l = layerOf.get(x);
+        if (l instanceof L.Marker) l.setIcon(iconFor(x, x === f));
+        else l.setStyle(styleFor(x, x === f));
+      });
+    }
+
+    // Overzicht van alle vakken (bij een projectlink)
+    function showAll(zoom) {
+      current = null;
+      highlight(null);
+      const total = feats.reduce((t, f) => { const m = measure(f); return { area: t.area + (m.area || 0), length: t.length + (m.length || 0) }; }, { area: 0, length: 0 });
+      card.innerHTML = `
+        <div class="vc-head">
+          <span class="vc-icon">${icon('i-layers')}</span>
+          <div class="vc-titles">
+            <span class="vc-name">${esc(projectTitle)}</span>
+            <span class="vc-meta">${feats.length} ${feats.length === 1 ? 'vak' : 'vakken'} · tik op een vak voor details</span>
+          </div>
+        </div>
+        ${measureTiles({ area: total.area, length: total.length })}
+        <ul class="vc-list">${feats.map((f, i) => {
+          const c = f.props.color || '#0a6c8f';
+          const m = measureText(f, true);
+          return `<li data-i="${i}"><span class="vc-dot" style="color:${esc(c)};background:${esc(c)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span><span class="vc-li-main"><span>${f.props.ref ? `<span class="mono vc-ref">${esc(f.props.ref)}</span> ` : ''}${esc(f.props.name || SHAPE_LABEL[shapeOf(f)])}</span>${f.props.category ? `<small>${esc(f.props.category)}</small>` : ''}</span><span class="mono vc-li-m">${esc(m)}</span></li>`;
+        }).join('')}</ul>
+        <div class="vc-actions">
+          <button type="button" class="btn" data-vc="fit"><svg><use href="#i-target"/></svg>Toon alles</button>
+          ${locateBtn}
+        </div>
+        ${foot}`;
+      sync();
+      if (zoom) fitTo(shared.getBounds());
+    }
+
+    // Eén vak in detail
+    function show(f, zoom) {
+      current = f;
+      highlight(multi ? f : null);
+      const color = f.props.color || '#0a6c8f';
+      let c = null;
+      try { c = turf.centroid(f.geometry).geometry.coordinates; } catch (e) { /* */ }
+      card.innerHTML = `
+        ${multi ? `<button type="button" class="vc-back" data-vc="all"><svg><use href="#i-chevron"/></svg>Alle vakken (${feats.length})</button>` : ''}
+        <div class="vc-head">
+          <span class="vc-icon" style="color:${esc(color)};background:${esc(color)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
+          <div class="vc-titles">
+            <span class="vc-name">${esc(f.props.name || SHAPE_LABEL[shapeOf(f)] || 'Gedeeld vak')}</span>
+            <span class="vc-meta">${[f.props.ref && `<span class="mono vc-ref">${esc(f.props.ref)}</span>`, esc(f.props.category), esc(f.props.status)].filter(Boolean).join(' · ')}</span>
+          </div>
+        </div>
+        ${measureTiles(measure(f))}
+        <div class="vc-actions">
+          <button type="button" class="btn" data-vc="fit"><svg><use href="#i-target"/></svg>Toon vak</button>
+          ${c ? `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${c[1].toFixed(6)},${c[0].toFixed(6)}"><svg><use href="#i-next"/></svg>Route</a>` : ''}
+          ${locateBtn}
+        </div>
+        ${foot}`;
+      sync();
+      if (zoom) fitTo(boundsOf([f]));
+    }
+
+    function sync() {
+      document.documentElement.style.setProperty('--vc-h', `${card.offsetHeight}px`);
+    }
+
+    card.addEventListener('click', (e) => {
+      const li = e.target.closest('.vc-list li[data-i]');
+      if (li) { show(feats[+li.dataset.i], true); return; }
+      const act = e.target.closest('[data-vc]')?.dataset.vc;
+      if (act === 'all') showAll(true);
+      if (act === 'fit') fitTo(current ? boundsOf([current]) : shared.getBounds());
+      if (act === 'locate') locate();
+    });
+    map.on('click', () => { if (multi && current) showAll(false); });
+
+    function locate() {
       if (!('geolocation' in navigator)) return;
       navigator.geolocation.getCurrentPosition((p) => {
         const ll = L.latLng(p.coords.latitude, p.coords.longitude);
@@ -383,12 +461,14 @@
           pos.getLayers()[0].setLatLng(ll).setRadius(p.coords.accuracy);
           pos.getLayers()[1].setLatLng(ll);
         }
-        map.fitBounds(shared.getBounds().extend(ll), { padding: [60, 60], paddingBottomRight: [60, (isMobile() ? card.getBoundingClientRect().height : 0) + 60] });
+        fitTo((current ? boundsOf([current]) : shared.getBounds()).extend(ll));
       }, () => alert('Je locatie kon niet worden bepaald. Sta locatie toe in je browserinstellingen.'), { enableHighAccuracy: true, timeout: 15000 });
-    });
+    }
+
+    if (multi) showAll(true); else show(feats[0], true);
   }
 
-  if (viewerMode) { startViewer(); return; }
+  if (viewerMode) { window.Kaartdata = { map }; startViewer(); return; }
 
   // Opent iemand in de app een nieuwe kijklink, laad dan de kijkweergave
   window.addEventListener('hashchange', () => { if (Share.payloadFromHash()) location.reload(); });
@@ -1361,92 +1441,39 @@
 
 
   // ---------------------------------------------------------------- Delen (kijklink)
-  // BGT-nummers van een object: uit props.bgt, of (oudere objecten) uit de notities
-  const SOURCE_COLL = {
-    'BGT begroeid terreindeel': 'begroeidterreindeel', 'BGT ondersteunend wegdeel': 'ondersteunendwegdeel',
-    'BGT onbegroeid terreindeel': 'onbegroeidterreindeel', 'BGT wegdeel': 'wegdeel', 'BGT waterdeel': 'waterdeel',
-    'BGT ondersteunend waterdeel': 'ondersteunendwaterdeel', 'BGT pand': 'pand', 'BGT overbruggingsdeel': 'overbruggingsdeel',
-  };
-  function candidateRefs(f) {
-    if (Array.isArray(f.props.bgt) && f.props.bgt.length) return f.props.bgt;
-    const refs = [];
-    const re = /(BGT [a-z ]+?)(?: \(|, )id ([A-Z]\d{4}\.[0-9a-f]{32})/g;
-    let m;
-    while ((m = re.exec(f.props.notes || ''))) {
-      let coll = SOURCE_COLL[m[1]];
-      if (m[1] === 'BGT vegetatieobject') coll = f.geometry.type === 'Point' ? 'vegetatieobject_punt' : /Line/.test(f.geometry.type) ? 'vegetatieobject_lijn' : 'vegetatieobject_vlak';
-      if (coll) refs.push(`${coll}:${m[2]}`);
-    }
-    return refs;
-  }
-  // Alleen als de vorm nog precies gelijk is aan de BGT (niet aangepast) mag het nummer de vorm vervangen.
-  // Punt voor punt vergelijken; alleen de afronding op 6 decimalen (± 10 cm) bij het opslaan is toegestaan.
-  function sameShape(a, b) {
-    try {
-      const norm = (g) => g.type === 'MultiPolygon' && g.coordinates.length === 1 ? { type: 'Polygon', coordinates: g.coordinates[0] } : g;
-      a = norm(a); b = norm(b);
-      if (a.type !== b.type) return false;
-      const ca = turf.coordAll(a), cb = turf.coordAll(b);
-      if (ca.length !== cb.length) return false;
-      return ca.every((p, i) => Math.abs(p[0] - cb[i][0]) <= 2e-6 && Math.abs(p[1] - cb[i][1]) <= 2e-6);
-    } catch (e) { return false; }
-  }
-  async function verifiedRefs(f) {
-    const refs = candidateRefs(f);
-    if (!refs.length || f.shape === 'Circle') return null;
-    try {
-      const g = await geometryFromRefs(refs);
-      return sameShape(g, f.geometry) ? refs : null;
-    } catch (e) { return null; }
-  }
-
-  // Kijklink voor één object (BGT-nummer als de vorm ongewijzigd is, anders vereenvoudigde vorm)
-  async function buildShareLink(f, maxLen) {
-    const refs = await verifiedRefs(f);
-    return Share.linkFor([{ ...f, refs: refs || undefined }], maxLen);
-  }
-
+  // Kijklink zonder lengtegrens: één vak of alle vakken van het project, vorm op ± 10 cm
   const shareDialog = $('#shareDialog');
-  async function openShare(f) {
+  let shareTitleText = '';
+  async function openShare(features, title, label) {
     flushSave();
-    const btn = $('#shareFeature');
-    btn.disabled = true;
+    if (!features.length) { toast('Er zijn nog geen vakken om te delen'); return; }
     let res;
     try {
-      res = await buildShareLink(f);
+      res = await Share.linkFor(features, { title });
     } catch (err) {
-      toast(err.message);
+      toast('Delen lukte niet: ' + err.message);
       return;
-    } finally {
-      btn.disabled = false;
     }
     const url = res.url;
+    shareTitleText = label;
     $('#shareUrl').value = url;
-    $('#shareTitle').textContent = `Kijklink voor “${f.props.name || 'dit vak'}”`;
-    let info;
-    if (res.usedRefs) {
-      info = 'Exacte BGT-vorm: de kijkweergave haalt het vak op bij PDOK' + (res.withGeom ? ' (met reservevorm in de link).' : '.');
-    } else if (f.geometry.type === 'Point' || res.tol <= 0.1) {
-      info = 'Vorm op ± 10 cm nauwkeurig.';
-    } else {
-      let dev = '';
-      try {
-        if (/Polygon/.test(f.geometry.type)) {
-          const a0 = turf.area(f.geometry), a1 = turf.area(Share.simplify(f.geometry, res.tol));
-          dev = `, oppervlakte wijkt ${nf(Math.abs(a1 - a0) / a0 * 100, 1)}% af`;
-        }
-      } catch (e) { /* */ }
-      info = `Vorm vereenvoudigd tot ± ${nf(res.tol, res.tol < 1 ? 2 : 0)} m om binnen ${Share.MAX_LEN} tekens te blijven${dev}.`;
-    }
-    if (res.meta >= 1) info += ' Categorie en status zijn weggelaten om ruimte te sparen.';
-    $('#shareInfo').innerHTML = `<strong>${url.length} / ${Share.MAX_LEN} tekens</strong> · ${esc(info)}`;
+    $('#shareTitle').textContent = `Kijklink voor ${label}`;
+    const n = features.length;
+    let info = `${n} ${n === 1 ? 'vak' : 'vakken'} · ${url.length.toLocaleString('nl-NL')} tekens · vormen op ± 10 cm nauwkeurig.`;
+    if (url.length > 8000) info += ' Lange link: via mail of WhatsApp werkt hij, maar sommige apps (zoals sms) knippen lange links af.';
+    $('#shareInfo').textContent = info;
     $('#shareNative').hidden = !navigator.share;
     shareDialog.showModal();
     $('#shareUrl').select();
   }
   $('#shareFeature').addEventListener('click', () => {
     const f = Store.feature(selectedId);
-    if (f) openShare(f);
+    if (f) openShare([f], '', `“${f.props.name || 'dit vak'}”`);
+  });
+  $('#shareProject').addEventListener('click', () => {
+    const p = Store.activeProject();
+    if (!p) return;
+    openShare(Store.features(p.id), p.name, `project “${p.name}”`);
   });
   $('#shareCopy').addEventListener('click', async () => {
     const input = $('#shareUrl');
@@ -1461,7 +1488,7 @@
   $('#shareNative').addEventListener('click', async () => {
     const f = Store.feature(selectedId);
     try {
-      await navigator.share({ title: `${f?.props.name || 'Vak'} – Kaartdata`, text: f?.props.name || 'Bekijk dit vak op de kaart', url: $('#shareUrl').value });
+      await navigator.share({ title: `${shareTitleText} – Kaartdata`, text: `Bekijk ${shareTitleText} op de kaart`, url: $('#shareUrl').value });
     } catch (e) { /* geannuleerd */ }
   });
   $('#shareOpen').addEventListener('click', () => window.open($('#shareUrl').value, '_blank', 'noopener'));
@@ -1796,5 +1823,5 @@
   }
 
   // Handig voor debuggen in de console
-  window.Kaartdata = { map, Store, select, buildShareLink };
+  window.Kaartdata = { map, Store, select };
 })();

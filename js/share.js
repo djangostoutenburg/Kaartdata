@@ -3,10 +3,10 @@
  * Formaat:  <pagina>#d=<payload>   (oude links met #deel= blijven werken)
  *   payload = 'c' + base64url(deflate-raw(BINAIR v3)) | 'C' + base64url(BINAIR v3)   (huidig)
  *           | 'b'/'B' (v2) en 'z'/'j' (v1): oudere varianten, alleen nog om te openen
- * De hele link blijft binnen MAX_LEN (255) tekens:
- *   - een ongewijzigd BGT-vak gaat mee als BGT-nummer (+ grove reservevorm als die past);
- *     de kijkweergave haalt de exacte vorm bij PDOK op
- *   - anders wordt de vorm stap voor stap vereenvoudigd tot de link past
+ *   payload = 'd' | 'D' (v4): als v3, maar met een titel (projectnaam) vooraan:
+ *             varint(len) + titel, gevolgd door de v3-inhoud. Gebruikt voor projectlinks.
+ * Er is geen lengtegrens: alle vakken gaan mee, met de vorm op ± 10 cm nauwkeurig.
+ * (Oudere links met BGT-nummers en een grens van 255 tekens blijven gewoon openen.)
  * BINAIR = varint(aantal) + per object: varint(len) + JSON-gegevens, varint(type), coördinaten
  *   als zigzag-varints (graden × 1e6, verschil t.o.v. vorig punt). Lijnen en vlakken worden
  *   vooraf vereenvoudigd: punten die < 10 cm afwijken vallen weg (oppervlakte verandert ~0,1%).
@@ -92,7 +92,7 @@
     const uint = () => { let n = 0, m = 1, b; do { b = bytes[i++]; if (b === undefined) throw new Error('kapot'); n += (b & 127) * m; m *= 128; } while (b & 128); return n; };
     const int = () => { const n = uint(); return n % 2 ? -(n + 1) / 2 : n / 2; };
     const take = (len) => { const out = bytes.subarray(i, i + len); i += len; return out; };
-    return { uint, int, take };
+    return { uint, int, take, pos: () => i };
   }
 
   function writeGeometry(w, g, scale = SCALE) {
@@ -314,6 +314,21 @@
     const kind = payload.charAt(0);
     let bytes;
     try { bytes = fromB64url(payload.slice(1)); } catch (e) { throw new Error('Deze link is ongeldig of onvolledig.'); }
+    if (kind === 'd' || kind === 'D') {
+      try {
+        if (kind === 'd') {
+          if (!('DecompressionStream' in global)) throw new Error('Deze browser is te oud om de link te openen. Werk je browser bij.');
+          bytes = await pipe(bytes, new DecompressionStream('deflate-raw'));
+        }
+        const r = reader(bytes);
+        const title = new TextDecoder().decode(r.take(r.uint()));
+        const feats = decodeV3(bytes.subarray(r.pos()));
+        feats.title = title;
+        return feats;
+      } catch (e) {
+        throw new Error(/^Deze /.test(e.message) ? e.message : 'Deze link is ongeldig of onvolledig.');
+      }
+    }
     if (kind === 'c' || kind === 'C') {
       try {
         if (kind === 'c') {
@@ -356,11 +371,26 @@
     }));
   }
 
-  // Deellink binnen MAX_LEN tekens. Geeft { url, tol, usedRefs, withGeom, meta }.
-  async function linkFor(features, maxLen = MAX_LEN) {
+  // Deellink zonder lengtegrens: alle vakken, vorm op ± 10 cm. Met `title` (projectnaam) als v4.
+  async function linkFor(features, { title } = {}) {
     const base = location.href.split('#')[0].replace(/index\.html$/, '');
-    const r = await encodeWithin(features, base, maxLen);
-    return { url: base + PREFIX + r.payload, tol: r.tol, usedRefs: !!r.refs, withGeom: r.geom !== false, meta: r.meta };
+    const body = encodeV3(features, { geom: true, meta: 0, tol: 0.1, scale: 1e6 });
+    let bytes = body, kind = 'c';
+    if (title) {
+      const t = new TextEncoder().encode(title);
+      const w = writer();
+      w.uint(t.length);
+      bytes = new Uint8Array([...w.bytes, ...t, ...body]);
+      kind = 'd';
+    }
+    let payload = kind.toUpperCase() + toB64url(bytes);
+    if ('CompressionStream' in global) {
+      try {
+        const z = kind + toB64url(await pipe(bytes, new CompressionStream('deflate-raw')));
+        if (z.length < payload.length) payload = z;
+      } catch (e) { /* terugval */ }
+    }
+    return { url: base + PREFIX + payload };
   }
 
   const payloadFromHash = () => {
