@@ -14,7 +14,7 @@ Je kunt de map ook hosten via GitHub Pages (Settings → Pages → branch kiezen
 
 - **Projecten** – meerdere projecten met naam, opdrachtgever, omschrijving en eigen kleur.
 - **Tekenen** – polygoon, rechthoek, lijn (kabel/leiding/route), punt (asset) en cirkel.
-- **Selecteren uit de kaart** – tik op een grasveld, plantsoen, pad, weg, berm, water, gebouw of perceel en neem het exacte vlak over uit de BGT (Basisregistratie Grootschalige Topografie) of het Kadaster. Liggen er meerdere vlakken op dezelfde plek, dan blader je met *Andere* (eerst het kleinste, bijvoorbeeld het grasveld, daarna het perceel). Je kunt meerdere vlakken achter elkaar aantikken (nog eens tikken haalt een vlak weg) en ze daarna in één keer overnemen: als losse objecten, of met *Samenvoegen* als één gebied.
+- **Groen selecteren uit de kaart** – in de modus *Selecteer* licht al het groen uit de BGT op: grasvelden, plantsoenen, beplanting, groene bermen, hagen en bomen (vanaf straatniveau ingezoomd). Tik op vlakken, hagen en bomen om ze te selecteren (nog eens tikken haalt ze weg) en neem ze in één keer over: los, of met *Samenvoegen* als één groengebied. Andere objecten (gebouwen, wegen, water, percelen) zijn niet selecteerbaar.
 - **Bewerken** – hoekpunten verplaatsen, slepen, roteren, uitsnijden (gat/knippen) en verwijderen via de knoppen links op de kaart, of “Vorm bewerken” in het objectpaneel. Snappen aan bestaande objecten staat aan.
 - **Eigenschappen per object** – naam, soort (gebied of asset), categorie, status, kenmerk/ID, notities en kleur.
 - **Metingen** – oppervlakte (m²/ha), omtrek en lengte worden automatisch berekend.

@@ -8,6 +8,7 @@
   const DEFAULT_CATEGORIES = [
     'Projectgebied', 'Perceel', 'Bouwvlak', 'Werkterrein', 'Gebouw', 'Groen', 'Verharding', 'Water',
     'Kabel', 'Leiding', 'Riolering', 'Weg', 'Route', 'Hek',
+    'Gras', 'Beplanting', 'Bos', 'Berm', 'Haag',
     'Lantaarnpaal', 'Boom', 'Put', 'Kast', 'Bord', 'Meetpunt', 'Overig',
   ];
 
@@ -103,6 +104,19 @@
     });
   }
 
+  // Bomen als rond boomsymbool, andere punten als speld
+  function treeIcon(color, selected) {
+    const size = selected ? 26 : 20;
+    return L.divIcon({
+      className: 'asset-pin',
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+      tooltipAnchor: [0, -size / 2],
+      html: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" style="fill:${esc(color)};stroke:#fff;stroke-width:2"/><path d="M12 6.5l-4 5h2.2l-2.7 3.5H11v2.5h2V15h3.5l-2.7-3.5H16z" style="fill:#fff"/></svg>`,
+    });
+  }
+  const iconFor = (f, selected) => f.props.category === 'Boom' ? treeIcon(colorOf(f), selected) : pinIcon(colorOf(f), selected);
+
   function styleFor(f, selected) {
     const color = colorOf(f);
     const isLine = f.geometry.type.includes('LineString');
@@ -120,7 +134,7 @@
     const layer = featureLayers.get(f.id);
     if (!layer) return;
     const selected = f.id === selectedId;
-    if (layer instanceof L.Marker) layer.setIcon(pinIcon(colorOf(f), selected));
+    if (layer instanceof L.Marker) layer.setIcon(iconFor(f, selected));
     else layer.setStyle(styleFor(f, selected));
     layer.unbindTooltip();
     if (showLabels && f.props.name) {
@@ -148,7 +162,7 @@
     }
     if (f.geometry.type === 'Point') {
       const [lng, lat] = f.geometry.coordinates;
-      return L.marker([lat, lng], { icon: pinIcon(colorOf(f)) });
+      return L.marker([lat, lng], { icon: f.props ? iconFor(f) : pinIcon(colorOf(f)) });
     }
     return L.GeoJSON.geometryToLayer({ type: 'Feature', geometry: f.geometry, properties: {} });
   }
@@ -289,7 +303,7 @@
   });
 
   map.on('click', (e) => {
-    if (picking) { pickAt(e.latlng); return; }
+    if (picking) { pickMsg = `${isMobile() ? 'Tik' : 'Klik'} op een groen vlak, haag of boom`; renderPickStatus(); pickMsg = ''; return; }
     if (!map.pm.globalDrawModeEnabled() && !editLayer) closePanel();
   });
 
@@ -314,12 +328,11 @@
     $('#drawFinish').disabled = multi && n < (drawShape === 'Polygon' ? 3 : 2);
     $('#drawGps').hidden = !(multi || drawShape === 'Marker') || !('geolocation' in navigator);
     $('#cancelDraw').hidden = !!editLayer;
-    $('#pickNext').hidden = !picking || !pickLast || pickLast.candidates.length < 2;
-    $('#pickMerge').hidden = !picking || pickSel.length < 2;
+    $('#pickNext').hidden = true;
+    $('#pickMerge').hidden = !picking || selectedItems().filter(g => g.item.kind === 'polygon').length < 2;
     $('#pickMerge').classList.toggle('on', pickMerge);
-    $('#pickAccept').hidden = !picking || !pickSel.length;
-    if (picking && pickLast && pickLast.candidates.length > 1) $('#pickNext').querySelector('span').textContent = `Andere (${pickLast.index + 1}/${pickLast.candidates.length})`;
-    if (picking) $('#pickAccept').querySelector('span').textContent = pickSel.length > 1 && !isMobile() ? `Overnemen (${pickSel.length})` : 'Overnemen';
+    $('#pickAccept').hidden = !picking || !selectedItems().length;
+    if (picking) { const n = selectedItems().length; $('#pickAccept').querySelector('span').textContent = n > 1 && !isMobile() ? `Overnemen (${n})` : 'Overnemen'; }
     if (multi && n > 0) {
       const need = drawShape === 'Polygon' ? 3 : 2;
       $('#drawHintText').textContent = n < need
@@ -473,57 +486,70 @@
     }
   });
 
-  // ---------------------------------------------------------------- Selecteren uit kaart (PDOK: BGT + Kadaster)
+  // ---------------------------------------------------------------- Groen selecteren uit de kaart (PDOK BGT)
+  // Alleen groenobjecten: begroeide terreindelen, groene bermen, vegetatievlakken, hagen en bomen.
+  // In selecteermodus wordt al het groen in beeld getoond; tik om te (de)selecteren.
   const BGT = 'https://api.pdok.nl/lv/bgt/ogc/v1/collections';
-  const BRK = 'https://api.pdok.nl/kadaster/brk-kadastrale-kaart/ogc/v1/collections';
   const cap = (t) => t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
-  const COLORS = { groen: '#3f8f3a', water: '#2f6fd6', weg: '#5b6778', gebouw: '#b4572b', perceel: '#6a4fc2' };
+  const GREEN = { vlak: '#3f8f3a', berm: '#5f9e2f', haag: '#2d6a27', boom: '#1d7a3c' };
+  const MIN_PICK_ZOOM = 17;
 
-  // Per bron: hoe we het vlak benoemen en indelen
-  const PICK_SOURCES = [
-    { id: 'begroeidterreindeel', url: `${BGT}/begroeidterreindeel/items`, describe: (p) => {
+  function greenCategory(text) {
+    const t = (text || '').toLowerCase();
+    if (/gras|kruid/.test(t)) return 'Gras';
+    if (/heester|struik|bodembedek|haag/.test(t)) return 'Beplanting';
+    if (/bos|houtwal|boom/.test(t)) return 'Bos';
+    return 'Groen';
+  }
+
+  const GREEN_SOURCES = [
+    { id: 'begroeidterreindeel', kind: 'polygon', describe: (p) => {
         const t = p.plus_fysiek_voorkomen || p.fysiek_voorkomen;
-        return { name: cap(t) || 'Begroeid terrein', category: 'Groen', color: COLORS.groen, kind: 'gebied', source: 'BGT begroeid terreindeel' };
+        return { name: cap(t) || 'Groenvlak', category: greenCategory(t), color: GREEN.vlak, source: 'BGT begroeid terreindeel',
+          extra: p.plus_fysiek_voorkomen && p.fysiek_voorkomen ? p.fysiek_voorkomen : '' };
       } },
-    { id: 'onbegroeidterreindeel', url: `${BGT}/onbegroeidterreindeel/items`, describe: (p) => {
+    { id: 'ondersteunendwegdeel', kind: 'polygon',
+      keep: (p) => /groen|gras|heester|bodembedek|begroeid/i.test(`${p.fysiek_voorkomen} ${p.plus_fysiek_voorkomen}`),
+      describe: (p) => {
         const t = p.plus_fysiek_voorkomen || p.fysiek_voorkomen;
-        return { name: cap(t) || 'Onbegroeid terrein', category: p.fysiek_voorkomen === 'erf' ? 'Erf' : 'Verharding', color: COLORS.weg, kind: 'gebied', source: 'BGT onbegroeid terreindeel' };
+        return { name: `${cap(p.plus_functie || p.functie) || 'Berm'} (${t})`, category: greenCategory(t) === 'Groen' ? 'Berm' : greenCategory(t),
+          color: GREEN.berm, source: 'BGT ondersteunend wegdeel' };
       } },
-    { id: 'wegdeel', url: `${BGT}/wegdeel/items`, describe: (p) => ({
-        name: cap(p.plus_functie || p.functie) || 'Wegdeel', category: 'Weg', color: COLORS.weg, kind: 'gebied',
-        extra: [p.fysiek_voorkomen, p.plus_fysiek_voorkomen].filter(Boolean).join(', '), source: 'BGT wegdeel' }) },
-    { id: 'ondersteunendwegdeel', url: `${BGT}/ondersteunendwegdeel/items`, describe: (p) => {
-        const groen = /groen|gras|begroeid/.test(`${p.fysiek_voorkomen} ${p.plus_fysiek_voorkomen}`);
-        return { name: cap(p.plus_functie || p.functie) || 'Ondersteunend wegdeel', category: groen ? 'Groen' : 'Weg', color: groen ? COLORS.groen : COLORS.weg, kind: 'gebied',
-          extra: [p.fysiek_voorkomen, p.plus_fysiek_voorkomen].filter(Boolean).join(', '), source: 'BGT ondersteunend wegdeel' };
-      } },
-    { id: 'waterdeel', url: `${BGT}/waterdeel/items`, describe: (p) => ({
-        name: cap(p.plus_type || p.type) || 'Water', category: 'Water', color: COLORS.water, kind: 'gebied', source: 'BGT waterdeel' }) },
-    { id: 'ondersteunendwaterdeel', url: `${BGT}/ondersteunendwaterdeel/items`, describe: (p) => ({
-        name: cap(p.plus_type || p.type) || 'Oever', category: 'Water', color: COLORS.water, kind: 'gebied', source: 'BGT ondersteunend waterdeel' }) },
-    { id: 'pand', url: `${BGT}/pand/items`, describe: (p) => ({
-        name: 'Gebouw', category: 'Gebouw', color: COLORS.gebouw, kind: 'asset',
-        ref: p.bag_pnd ? `BAG ${p.bag_pnd}` : '', source: 'BGT pand' }) },
-    { id: 'overbruggingsdeel', url: `${BGT}/overbruggingsdeel/items`, describe: (p) => ({
-        name: 'Brug', category: 'Kunstwerk', color: COLORS.weg, kind: 'asset', source: 'BGT overbruggingsdeel' }) },
-    { id: 'perceel', url: `${BRK}/perceel/items`, describe: (p) => {
-        const code = [p.kadastrale_gemeente_waarde, p.sectie, p.perceelnummer].filter(v => v != null && v !== '').join(' ');
-        return { name: `Perceel ${code}`.trim(), category: 'Perceel', color: COLORS.perceel, kind: 'gebied', ref: code,
-          extra: p.kadastrale_grootte_waarde ? `kadastrale grootte ${nf(p.kadastrale_grootte_waarde)} m²` : '', source: 'Kadaster (BRK)' };
-      }, current: (p) => !p.status_historie_waarde || p.status_historie_waarde === 'Geldig' },
+    { id: 'vegetatieobject_vlak', kind: 'polygon', describe: (p) => ({
+        name: cap(p.plus_type) || 'Vegetatie', category: greenCategory(p.plus_type), color: GREEN.haag, source: 'BGT vegetatieobject' }) },
+    { id: 'vegetatieobject_lijn', kind: 'line', describe: (p) => ({
+        name: cap(p.plus_type) || 'Haag', category: p.plus_type === 'haag' ? 'Haag' : 'Beplanting', color: GREEN.haag, source: 'BGT vegetatieobject' }) },
+    { id: 'vegetatieobject_punt', kind: 'point', describe: (p) => ({
+        name: cap(p.plus_type) || 'Boom', category: 'Boom', color: GREEN.boom, source: 'BGT vegetatieobject' }) },
   ];
 
-  // Meerdere vlakken selecteren: elke tik voegt een vlak toe aan de selectie,
-  // opnieuw tikken op een geselecteerd vlak haalt het weer weg.
   let picking = false;
-  let pickSel = [];          // [{ candidates, index, layer }]
-  let pickLast = null;       // laatst toegevoegde (voor "Andere")
-  let pickMerge = false;     // samenvoegen tot één vlak bij overnemen
-  let pickPending = 0;
+  let pickMerge = false;
   let pickCtrl = null;
   let pickMsg = '';
+  let pickLoading = 0;
+  let pickTimer = null;
+  const greenItems = new Map();     // id -> { item, layer, selected }
   const pickButtons = document.querySelectorAll('[data-pick]');
-  const candOf = (e) => e.candidates[e.index];
+  map.createPane('greenPick').style.zIndex = 450;
+  const greenRenderer = L.canvas({ pane: 'greenPick', tolerance: 8 });
+  const greenGroup = L.layerGroup();
+
+  const selectedItems = () => [...greenItems.values()].filter(g => g.selected);
+
+  function greenStyle(item, selected) {
+    if (item.kind === 'point') {
+      return selected
+        ? { radius: 8, color: '#fff', weight: 2.5, fillColor: '#0f5a2a', fillOpacity: 1 }
+        : { radius: 5.5, color: '#fff', weight: 1.2, fillColor: item.info.color, fillOpacity: 0.85 };
+    }
+    if (item.kind === 'line') {
+      return selected ? { color: '#0f5a2a', weight: 7, opacity: 1 } : { color: item.info.color, weight: 5, opacity: 0.6 };
+    }
+    return selected
+      ? { color: '#0f5a2a', weight: 2.5, fillColor: '#2fa84f', fillOpacity: 0.55 }
+      : { color: item.info.color, weight: 1, fillColor: item.info.color, fillOpacity: 0.18 };
+  }
 
   function startPick() {
     if (!Store.activeProject()) { toast('Maak eerst een project aan'); return; }
@@ -531,143 +557,139 @@
     stopEditing();
     closePanel();
     picking = true;
-    pickSel = [];
-    pickLast = null;
     pickMsg = '';
     pickCtrl = new AbortController();
     pickButtons.forEach(b => b.classList.add('active'));
+    greenGroup.addTo(map);
     hint.hidden = false;
     document.body.classList.add('drawing');
     renderPickStatus();
-    if (map.getZoom() < 16) toast('Zoom ver genoeg in om een vlak precies te kiezen');
+    loadGreen();
   }
 
   function stopPick() {
     if (!picking) return;
     picking = false;
     pickCtrl?.abort();
-    pickSel.forEach(e => e.layer.remove());
-    pickSel = [];
-    pickLast = null;
-    pickPending = 0;
+    clearTimeout(pickTimer);
+    greenGroup.clearLayers();
+    greenGroup.remove();
+    greenItems.clear();
+    pickLoading = 0;
     pickButtons.forEach(b => b.classList.remove('active'));
     hint.classList.remove('loading');
     setDrawButton(null);
   }
 
   pickButtons.forEach(b => b.addEventListener('click', () => { if (picking) stopPick(); else startPick(); }));
+  map.on('moveend', () => {
+    if (!picking) return;
+    clearTimeout(pickTimer);
+    pickTimer = setTimeout(loadGreen, 250);
+  });
 
   function renderPickStatus() {
-    hint.classList.toggle('loading', pickPending > 0);
+    hint.classList.toggle('loading', pickLoading > 0);
     const verb = isMobile() ? 'Tik' : 'Klik';
+    const sel = selectedItems();
     let html;
-    if (pickPending > 0 && !pickSel.length) {
-      html = 'Vlakken zoeken';
-    } else if (!pickSel.length) {
-      html = pickMsg || `${verb} op grasvelden, paden, gebouwen, water of percelen<small>Je kunt meerdere vlakken achter elkaar kiezen</small>`;
+    if (map.getZoom() < MIN_PICK_ZOOM) {
+      html = `Zoom verder in om het groen te tonen<small>Gras, beplanting, hagen en bomen verschijnen vanaf straatniveau</small>`;
+    } else if (!sel.length) {
+      html = pickLoading > 0 && !greenItems.size
+        ? 'Groen laden'
+        : (pickMsg || `${verb} op groenvlakken, hagen of bomen<small>Je kunt er meerdere achter elkaar kiezen</small>`);
     } else {
-      const area = pickSel.reduce((t, e) => t + candOf(e).area, 0);
-      const [v, u] = areaParts(area);
-      const n = pickSel.length;
-      const last = pickLast ? candOf(pickLast) : null;
-      const sub = pickMsg || (last ? `Laatste: ${last.info.name} · ${last.info.source}` : `${verb} opnieuw op een vlak om het weg te halen`);
-      html = `<strong>${n} ${n === 1 ? 'vlak' : 'vlakken'}</strong> · ${v} ${u}<small>${esc(sub)}</small>`;
+      const polys = sel.filter(g => g.item.kind === 'polygon');
+      const trees = sel.filter(g => g.item.kind === 'point').length;
+      const lines = sel.filter(g => g.item.kind === 'line');
+      const parts = [];
+      if (polys.length) parts.push(`${polys.length} ${polys.length === 1 ? 'vlak' : 'vlakken'} · ${areaParts(polys.reduce((t, g) => t + g.item.area, 0)).slice(0, 2).join(' ')}`);
+      if (lines.length) parts.push(`${lines.length} ${lines.length === 1 ? 'haag' : 'hagen'} · ${lenParts(lines.reduce((t, g) => t + g.item.length, 0)).slice(0, 2).join(' ')}`);
+      if (trees) parts.push(`${trees} ${trees === 1 ? 'boom' : 'bomen'}`);
+      html = `<strong>${parts.join(' · ')}</strong><small>${esc(pickMsg || `${verb} nog eens om iets weg te halen`)}</small>`;
     }
     $('#drawHintText').innerHTML = html;
     updateHintButtons();
   }
 
-  function selStyle(c, latest) {
-    return { color: c.info.color, weight: latest ? 3.5 : 2.5, fillColor: c.info.color, fillOpacity: 0.4, dashArray: latest ? '6 4' : null };
-  }
-  function restyleSelection() {
-    pickSel.forEach(e => e.layer.setStyle(selStyle(candOf(e), e === pickLast)));
-  }
-
-  async function fetchSource(src, latlng, signal) {
-    const d = 0.00002; // ± 1,5 m rond het getikte punt
-    const bbox = [latlng.lng - d, latlng.lat - d, latlng.lng + d, latlng.lat + d].map(v => v.toFixed(7)).join(',');
-    const res = await fetch(`${src.url}?f=json&limit=100&bbox=${bbox}`, { signal });
-    if (!res.ok) throw new Error(`${src.id}: ${res.status}`);
-    const data = await res.json();
-    const pt = turf.point([latlng.lng, latlng.lat]);
-    return (data.features || [])
-      .filter(f => f.geometry && /Polygon/.test(f.geometry.type))
-      .filter(f => (src.current ? src.current(f.properties) : f.properties.eind_registratie == null))
-      .filter(f => { try { return turf.booleanPointInPolygon(pt, f); } catch (e) { return false; } })
-      .map(f => {
-        // Eén-delige multipolygonen omzetten naar een gewone polygoon (makkelijker bewerken)
-        let geometry = f.geometry;
-        if (geometry.type === 'MultiPolygon' && geometry.coordinates.length === 1) {
-          geometry = { type: 'Polygon', coordinates: geometry.coordinates[0] };
-        }
-        const id = f.properties.lokaal_id || f.properties.identificatie_lokaal_id || f.id;
-        return { geometry, area: turf.area(geometry), info: src.describe(f.properties), id: `${src.id}:${id}`, srcId: id };
-      });
-  }
-
-  const selectedIds = (except) => new Set(pickSel.filter(e => e !== except).map(e => candOf(e).id));
-
-  async function pickAt(latlng) {
-    // Tik op een vlak dat al geselecteerd is: weghalen
-    const pt = turf.point([latlng.lng, latlng.lat]);
-    const hit = [...pickSel].reverse().find(e => { try { return turf.booleanPointInPolygon(pt, candOf(e).geometry); } catch (err) { return false; } });
-    if (hit) {
-      hit.layer.remove();
-      pickSel = pickSel.filter(e => e !== hit);
-      if (pickLast === hit) pickLast = pickSel[pickSel.length - 1] || null;
-      pickMsg = `${candOf(hit).info.name} weggehaald`;
-      restyleSelection();
-      renderPickStatus();
-      pickMsg = '';
-      return;
+  async function fetchCollection(src, bbox, signal) {
+    const now = new Date().toISOString().slice(0, 19) + 'Z';   // alleen de actuele objecten
+    let url = `${BGT}/${src.id}/items?f=json&limit=1000&bbox=${bbox}&datetime=${now}`;
+    const out = [];
+    for (let page = 0; url && page < 4; page++) {
+      const res = await fetch(url, { signal });
+      if (!res.ok) throw new Error(`${src.id}: ${res.status}`);
+      const data = await res.json();
+      out.push(...(data.features || []));
+      url = (data.links || []).find(l => l.rel === 'next')?.href;
     }
+    return out;
+  }
 
+  async function loadGreen() {
+    if (!picking) return;
+    if (map.getZoom() < MIN_PICK_ZOOM) { renderPickStatus(); return; }
     const signal = pickCtrl.signal;
-    pickPending++;
+    const b = map.getBounds().pad(0.15);
+    const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(v => v.toFixed(6)).join(',');
+    pickLoading++;
+    renderPickStatus();
+    const results = await Promise.allSettled(GREEN_SOURCES.map(async (src) => {
+      const feats = await fetchCollection(src, bbox, signal);
+      if (!picking || signal.aborted) return;
+      feats.forEach(f => addGreen(src, f));
+    }));
+    if (!picking || signal.aborted) return;
+    pickLoading--;
+    if (results.every(r => r.status === 'rejected')) pickMsg = 'PDOK is niet bereikbaar. Controleer je internetverbinding.';
+    renderPickStatus();
+    if (!greenItems.size) { pickMsg = 'Geen groen gevonden in dit gebied'; renderPickStatus(); }
     pickMsg = '';
-    renderPickStatus();
-    const results = await Promise.allSettled(PICK_SOURCES.map(src => fetchSource(src, latlng, signal)));
-    if (signal.aborted || !picking) return;
-    pickPending--;
-    const failed = results.filter(r => r.status === 'rejected').length;
-    // Kleinste vlak eerst: dat is meestal het grasveld/pad waar je op tikte, het perceel komt daarna
-    const taken = selectedIds();
-    const candidates = results.filter(r => r.status === 'fulfilled').flatMap(r => r.value)
-      .filter(c => !taken.has(c.id))
-      .sort((a, b) => a.area - b.area);
-    if (!candidates.length) {
-      pickMsg = failed === PICK_SOURCES.length
-        ? 'PDOK is niet bereikbaar. Controleer je internetverbinding.'
-        : 'Geen (nieuw) vlak gevonden op deze plek';
-      renderPickStatus();
-      pickMsg = '';
-      return;
-    }
-    const entry = { candidates, index: 0, layer: null };
-    entry.layer = L.geoJSON(candidates[0].geometry, { pmIgnore: true, interactive: false, style: selStyle(candidates[0], true) }).addTo(map);
-    pickSel.push(entry);
-    pickLast = entry;
-    restyleSelection();
-    renderPickStatus();
   }
 
-  $('#pickNext').addEventListener('click', () => {
-    const e = pickLast;
-    if (!e || e.candidates.length < 2) return;
-    const taken = selectedIds(e);
-    for (let i = 1; i <= e.candidates.length; i++) {
-      const j = (e.index + i) % e.candidates.length;
-      if (!taken.has(e.candidates[j].id)) { e.index = j; break; }
-    }
-    e.layer.remove();
-    e.layer = L.geoJSON(candOf(e).geometry, { pmIgnore: true, interactive: false, style: selStyle(candOf(e), true) }).addTo(map);
-    const b = e.layer.getBounds();
-    if (!map.getBounds().contains(b)) {
-      map.fitBounds(b, { paddingTopLeft: [40, 80], paddingBottomRight: [40, isMobile() ? 200 : 60], maxZoom: map.getZoom() });
-    }
+  function addGreen(src, f) {
+    if (!f.geometry || f.properties.eind_registratie != null) return;
+    if (src.keep && !src.keep(f.properties)) return;
+    const srcId = f.properties.lokaal_id || f.id;
+    const id = `${src.id}:${srcId}`;
+    if (greenItems.has(id)) return;
+    let geometry = f.geometry;
+    if (geometry.type === 'MultiPolygon' && geometry.coordinates.length === 1) geometry = { type: 'Polygon', coordinates: geometry.coordinates[0] };
+    if (geometry.type === 'MultiLineString' && geometry.coordinates.length === 1) geometry = { type: 'LineString', coordinates: geometry.coordinates[0] };
+    if (src.kind === 'point' && geometry.type !== 'Point') return;
+    const item = { id, srcId, geometry, kind: src.kind, info: src.describe(f.properties) };
+    if (item.kind === 'polygon') item.area = turf.area(geometry);
+    if (item.kind === 'line') item.length = turf.length(geometry, { units: 'meters' });
+    const layer = L.geoJSON(geometry, {
+      renderer: greenRenderer, pane: 'greenPick', pmIgnore: true,
+      style: () => greenStyle(item, false),
+      pointToLayer: (_, ll) => L.circleMarker(ll, { renderer: greenRenderer, pane: 'greenPick', pmIgnore: true, ...greenStyle(item, false) }),
+    });
+    layer.on('click', (e) => { L.DomEvent.stop(e); toggleGreen(id); });
+    layer.bindTooltip(() => {
+      const m = item.area ? ` · ${areaParts(item.area).slice(0, 2).join(' ')}` : item.length ? ` · ${lenParts(item.length).slice(0, 2).join(' ')}` : '';
+      return esc(item.info.name) + m;
+    }, { sticky: true, direction: 'top', opacity: 0.95 });
+    const g = { item, layer, selected: false };
+    greenItems.set(id, g);
+    // Bomen bovenop vlakken
+    layer.addTo(greenGroup);
+    if (item.kind === 'point' || item.kind === 'line') layer.bringToFront();
+  }
+
+  function toggleGreen(id) {
+    const g = greenItems.get(id);
+    if (!g) return;
+    g.selected = !g.selected;
+    g.layer.setStyle(greenStyle(g.item, g.selected));
+    if (g.selected && g.item.kind !== 'polygon') g.layer.bringToFront();
+    pickMsg = `${g.item.info.name} ${g.selected ? 'geselecteerd' : 'weggehaald'}`;
     renderPickStatus();
-  });
+    pickMsg = '';
+  }
+
+  $('#pickNext').hidden = true;
 
   $('#pickMerge').addEventListener('click', () => {
     pickMerge = !pickMerge;
@@ -675,65 +697,62 @@
     updateHintButtons();
   });
 
-  function propsFromCandidate(c) {
-    const info = c.info;
+  function propsFromItem(item) {
+    const info = item.info;
     return {
       name: info.name,
-      kind: info.kind,
+      kind: item.kind === 'polygon' ? 'gebied' : 'asset',
       category: info.category,
-      ref: info.ref || '',
+      ref: '',
       color: info.color,
       status: 'In beheer',
-      notes: `Overgenomen uit ${info.source}${c.srcId ? ` (id ${c.srcId})` : ''} op ${new Date().toLocaleDateString('nl-NL')}.${info.extra ? `\n${cap(info.extra)}.` : ''}`,
+      notes: `Overgenomen uit ${info.source}${item.srcId ? ` (id ${item.srcId})` : ''} op ${new Date().toLocaleDateString('nl-NL')}.${info.extra ? `\n${cap(info.extra)}.` : ''}`,
     };
   }
+  const SHAPE_FOR = { polygon: 'Polygon', line: 'Line', point: 'Marker' };
 
   $('#pickAccept').addEventListener('click', () => {
     const p = Store.activeProject();
-    const cands = pickSel.map(candOf);
-    if (!p || !cands.length) return;
+    const sel = selectedItems().map(g => g.item);
+    if (!p || !sel.length) return;
 
-    // Eén vlak, of samenvoegen tot één gebied
-    if (cands.length === 1 || pickMerge) {
-      let geometry = cands[0].geometry;
-      let props = propsFromCandidate(cands[0]);
-      if (cands.length > 1) {
-        let merged = null;
-        try { merged = turf.union(turf.featureCollection(cands.map(c => turf.feature(c.geometry)))); } catch (err) { merged = null; }
-        if (!merged) { toast('Samenvoegen lukte niet; probeer de vlakken los over te nemen'); return; }
-        geometry = merged.geometry;
-        const same = (k) => cands.every(c => c.info[k] === cands[0].info[k]);
-        const date = new Date().toLocaleDateString('nl-NL');
-        props = {
-          ...props,
-          name: same('name') ? cands[0].info.name : `Samengevoegd gebied`,
-          category: same('category') ? cands[0].info.category : cands[0].info.category,
-          kind: 'gebied',
-          ref: '',
-          notes: `Samengevoegd uit ${cands.length} vlakken op ${date}:\n` +
-            cands.map(c => `- ${c.info.name} (${c.info.source}${c.srcId ? `, id ${c.srcId}` : ''})`).join('\n'),
-        };
-      }
-      const layer = L.GeoJSON.geometryToLayer({ type: 'Feature', geometry, properties: {} });
-      stopPick();
-      createFromLayer('Polygon', layer, props);
-      if (cands.length > 1) toast(`${cands.length} vlakken samengevoegd tot één gebied`);
-      return;
+    let toCreate = sel.map(item => ({ shape: SHAPE_FOR[item.kind], geometry: item.geometry, props: propsFromItem(item) }));
+    const polys = sel.filter(i => i.kind === 'polygon');
+    if (pickMerge && polys.length > 1) {
+      let merged = null;
+      try { merged = turf.union(turf.featureCollection(polys.map(i => turf.feature(i.geometry)))); } catch (err) { merged = null; }
+      if (!merged) { toast('Samenvoegen lukte niet; zet Samenvoegen uit en neem de vlakken los over'); return; }
+      const same = (k) => polys.every(i => i.info[k] === polys[0].info[k]);
+      const mergedObj = {
+        shape: 'Polygon', geometry: merged.geometry,
+        props: {
+          ...propsFromItem(polys[0]),
+          name: same('name') ? polys[0].info.name : 'Groengebied',
+          category: same('category') ? polys[0].info.category : 'Groen',
+          notes: `Samengevoegd uit ${polys.length} vlakken op ${new Date().toLocaleDateString('nl-NL')}:\n` +
+            polys.map(i => `- ${i.info.name} (${i.info.source}${i.srcId ? `, id ${i.srcId}` : ''})`).join('\n'),
+        },
+      };
+      toCreate = [mergedObj, ...toCreate.filter(o => o.shape !== 'Polygon')];
     }
 
-    // Meerdere losse objecten
-    const created = cands.map(c => {
-      const f = Store.addFeature({ projectId: p.id, shape: 'Polygon', geometry: c.geometry, props: propsFromCandidate(c) });
+    stopPick();
+    if (toCreate.length === 1) {
+      const o = toCreate[0];
+      createFromLayer(o.shape, featureToLayer({ shape: o.shape, geometry: o.geometry, props: o.props }), o.props);
+      return;
+    }
+    const created = toCreate.map(o => {
+      const f = Store.addFeature({ projectId: p.id, shape: o.shape, geometry: o.geometry, props: o.props });
       attachLayer(f);
       return f;
     });
-    stopPick();
     renderList();
     renderCategories();
     const b = L.latLngBounds([]);
-    created.forEach(f => { const l = featureLayers.get(f.id); if (l?.getBounds) b.extend(l.getBounds()); });
+    created.forEach(f => { const l = featureLayers.get(f.id); if (!l) return; if (l.getBounds) b.extend(l.getBounds()); else b.extend(l.getLatLng()); });
     if (b.isValid() && !map.getBounds().contains(b)) map.fitBounds(b, { padding: [40, 40], maxZoom: map.getZoom() });
-    toast(`${created.length} vlakken overgenomen`);
+    toast(`${created.length} groenobjecten overgenomen`);
   });
 
   // ---------------------------------------------------------------- Projecten
