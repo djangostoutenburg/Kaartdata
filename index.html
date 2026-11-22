@@ -2,119 +2,212 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kaartdata – projecten &amp; assets</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1a2a">
+  <title>Kaartdata</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a6c8f'/%3E%3Cpath d='M9 22l3-12 9 2 2 9z' fill='none' stroke='white' stroke-width='2.2' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/geoman/leaflet-geoman.css">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+  <!-- Iconen -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-polygon" viewBox="0 0 24 24"><path d="M12 3.5l8 5.8-3 10.2H7L4 9.3z"/><circle cx="12" cy="3.5" r="1.4" class="fill"/><circle cx="20" cy="9.3" r="1.4" class="fill"/><circle cx="17" cy="19.5" r="1.4" class="fill"/><circle cx="7" cy="19.5" r="1.4" class="fill"/><circle cx="4" cy="9.3" r="1.4" class="fill"/></symbol>
+      <symbol id="i-rect" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="0.5"/><circle cx="4" cy="6" r="1.4" class="fill"/><circle cx="20" cy="6" r="1.4" class="fill"/><circle cx="20" cy="18" r="1.4" class="fill"/><circle cx="4" cy="18" r="1.4" class="fill"/></symbol>
+      <symbol id="i-line" viewBox="0 0 24 24"><path d="M3.5 18.5l6-9 5 5 6-9"/><circle cx="3.5" cy="18.5" r="1.4" class="fill"/><circle cx="9.5" cy="9.5" r="1.4" class="fill"/><circle cx="14.5" cy="14.5" r="1.4" class="fill"/><circle cx="20.5" cy="5.5" r="1.4" class="fill"/></symbol>
+      <symbol id="i-point" viewBox="0 0 24 24"><path d="M12 21.5s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10.5" r="2.3"/></symbol>
+      <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 12h8" stroke-dasharray="2 2"/><circle cx="12" cy="12" r="1.4" class="fill"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5L12 4l4.5 4.5M5 19.5h14"/></symbol>
+      <symbol id="i-print" viewBox="0 0 24 24"><path d="M7 9V4h10v5M7 17H4.5V9.5h15V17H17"/><rect x="7" y="14" width="10" height="6"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></symbol>
+      <symbol id="i-vertex" viewBox="0 0 24 24"><path d="M5 18L12 5l7 13z"/><rect x="10" y="3" width="4" height="4" class="fill"/><rect x="3" y="16" width="4" height="4" class="fill"/><rect x="17" y="16" width="4" height="4" class="fill"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 4l8.5 4.5L12 13 3.5 8.5z"/><path d="M3.5 12.5L12 17l8.5-4.5M3.5 16.5L12 21l8.5-4.5"/></symbol>
+      <symbol id="i-empty" viewBox="0 0 48 48"><path d="M10 34l6-20 18 4 4 16z" stroke-dasharray="3 3"/><circle cx="10" cy="34" r="2.2" class="fill"/><circle cx="16" cy="14" r="2.2" class="fill"/><circle cx="34" cy="18" r="2.2" class="fill"/></symbol>
+    </defs>
+  </svg>
+
   <div id="app">
-    <aside id="sidebar">
-      <header class="sb-header">
-        <h1>Kaartdata</h1>
-        <button id="toggleSidebar" class="icon-btn" title="Zijbalk in/uitklappen">☰</button>
+    <aside id="sidebar" aria-label="Projecten en objecten">
+      <header class="brand">
+        <div class="brand-mark"><svg><use href="#i-polygon"/></svg></div>
+        <div class="brand-text">
+          <span class="brand-name">Kaartdata</span>
+          <span class="brand-sub">Projecten &amp; assets</span>
+        </div>
+        <button id="toggleSidebar" class="icon-btn ghost" title="Zijbalk inklappen" aria-label="Zijbalk inklappen"><svg><use href="#i-chevron"/></svg></button>
       </header>
 
-      <section class="sb-section">
-        <div class="row">
-          <label for="projectSelect">Project</label>
-          <div class="btn-group">
-            <button id="newProject" class="small" title="Nieuw project">+ Nieuw</button>
-            <button id="editProject" class="small" title="Project bewerken">✎</button>
-            <button id="deleteProject" class="small danger" title="Project verwijderen">🗑</button>
+      <div class="sb-scroll">
+        <section class="sb-section">
+          <div class="section-head">
+            <h2>Project</h2>
+            <div class="btn-group">
+              <button id="editProject" class="icon-btn" title="Project bewerken" aria-label="Project bewerken"><svg><use href="#i-edit"/></svg></button>
+              <button id="deleteProject" class="icon-btn danger" title="Project verwijderen" aria-label="Project verwijderen"><svg><use href="#i-trash"/></svg></button>
+              <button id="newProject" class="btn primary sm" title="Nieuw project"><svg><use href="#i-plus"/></svg>Nieuw</button>
+            </div>
           </div>
-        </div>
-        <select id="projectSelect"></select>
-        <p id="projectMeta" class="muted"></p>
-      </section>
+          <div class="select-wrap">
+            <span id="projectSwatch" class="project-swatch"></span>
+            <select id="projectSelect" aria-label="Actief project"></select>
+          </div>
+          <p id="projectMeta" class="project-meta"></p>
+          <dl id="projectStats" class="stats">
+            <div><dt>Objecten</dt><dd data-stat="count">0</dd></div>
+            <div><dt>Oppervlakte</dt><dd data-stat="area">–</dd></div>
+            <div><dt>Lengte</dt><dd data-stat="length">–</dd></div>
+          </dl>
+        </section>
 
-      <section class="sb-section">
-        <label>Tekenen</label>
-        <div class="draw-grid">
-          <button data-draw="Polygon" title="Polygoon tekenen (gebied/perceel)">⬠ Polygoon</button>
-          <button data-draw="Rectangle" title="Rechthoek tekenen">▭ Rechthoek</button>
-          <button data-draw="Line" title="Lijn tekenen (kabel, leiding, route)">╱ Lijn</button>
-          <button data-draw="Marker" title="Puntasset plaatsen">📍 Punt</button>
-          <button data-draw="Circle" title="Cirkel tekenen">◯ Cirkel</button>
-          <button id="cancelDraw" title="Tekenen stoppen (Esc)">✕ Stop</button>
-        </div>
-        <p class="muted hint">Klik op de kaart om punten te zetten. Klik op het eerste punt (of dubbelklik) om af te sluiten.</p>
-      </section>
+        <section class="sb-section draw-section">
+          <div class="section-head"><h2>Tekenen</h2><kbd>Esc</kbd></div>
+          <div class="tools" role="toolbar" aria-label="Tekengereedschap">
+            <button class="tool" data-draw="Polygon" title="Polygoon tekenen"><svg><use href="#i-polygon"/></svg><span>Polygoon</span></button>
+            <button class="tool" data-draw="Rectangle" title="Rechthoek tekenen"><svg><use href="#i-rect"/></svg><span>Rechthoek</span></button>
+            <button class="tool" data-draw="Line" title="Lijn tekenen"><svg><use href="#i-line"/></svg><span>Lijn</span></button>
+            <button class="tool" data-draw="Marker" title="Punt plaatsen"><svg><use href="#i-point"/></svg><span>Punt</span></button>
+            <button class="tool" data-draw="Circle" title="Cirkel tekenen"><svg><use href="#i-circle"/></svg><span>Cirkel</span></button>
+          </div>
+        </section>
 
-      <section class="sb-section grow">
-        <div class="row">
-          <label for="search">Objecten <span id="featureCount" class="badge">0</span></label>
-          <select id="typeFilter" class="small">
-            <option value="">Alle</option>
-            <option value="gebied">Gebieden</option>
-            <option value="asset">Assets</option>
-          </select>
-        </div>
-        <input id="search" type="search" placeholder="Zoek op naam, categorie of notitie…">
-        <ul id="featureList"></ul>
-      </section>
+        <section class="sb-section list-section">
+          <div class="section-head">
+            <h2>Objecten <span id="featureCount" class="count">0</span></h2>
+          </div>
+          <div class="segmented" id="typeFilter" role="tablist" aria-label="Filter op soort">
+            <button data-filter="" class="on" role="tab">Alle</button>
+            <button data-filter="gebied" role="tab">Gebieden</button>
+            <button data-filter="asset" role="tab">Assets</button>
+          </div>
+          <div class="input-icon">
+            <svg><use href="#i-search"/></svg>
+            <input id="search" type="search" placeholder="Zoek op naam, categorie, kenmerk…">
+          </div>
+          <ul id="featureList"></ul>
+        </section>
+      </div>
 
-      <section class="sb-section">
-        <label>Gegevens</label>
-        <div class="btn-row">
-          <button id="exportProject" title="Huidig project als GeoJSON downloaden">⬇ GeoJSON</button>
-          <button id="exportCsv" title="Objectenlijst als CSV downloaden">⬇ CSV</button>
-          <label class="button" title="GeoJSON-bestand importeren in huidig project">⬆ Import<input id="importFile" type="file" accept=".geojson,.json,application/geo+json" hidden></label>
-          <button id="printMap" title="Kaart afdrukken of opslaan als PDF">🖨 Print/PDF</button>
-        </div>
-      </section>
+      <footer class="sb-footer">
+        <button id="exportProject" class="btn" title="Project downloaden als GeoJSON"><svg><use href="#i-download"/></svg>GeoJSON</button>
+        <button id="exportCsv" class="btn" title="Objectenlijst downloaden als CSV (Excel)"><svg><use href="#i-download"/></svg>CSV</button>
+        <label class="btn" title="GeoJSON importeren in dit project"><svg><use href="#i-upload"/></svg>Import<input id="importFile" type="file" accept=".geojson,.json,application/geo+json" hidden></label>
+        <button id="printMap" class="btn" title="Afdrukken of opslaan als PDF"><svg><use href="#i-print"/></svg>PDF</button>
+      </footer>
     </aside>
+    <div id="sidebarBackdrop" class="backdrop"></div>
 
     <main id="mapWrap">
       <div id="map"></div>
-      <form id="geocoder" autocomplete="off">
-        <input id="geocodeInput" type="search" placeholder="Zoek adres of plaats (PDOK)…">
-        <ul id="geocodeResults"></ul>
-      </form>
+
+      <div class="map-top">
+        <button id="openSidebar" class="map-btn" title="Menu" aria-label="Menu openen"><svg><use href="#i-menu"/></svg></button>
+        <form id="geocoder" autocomplete="off" role="search">
+          <div class="input-icon">
+            <svg><use href="#i-search"/></svg>
+            <input id="geocodeInput" type="search" placeholder="Zoek adres, postcode of plaats">
+          </div>
+          <ul id="geocodeResults"></ul>
+        </form>
+      </div>
+
+      <div id="drawHint" class="draw-hint" hidden>
+        <span id="drawHintText">Klik op de kaart om punten te plaatsen</span>
+        <button id="cancelDraw" class="hint-btn">Stoppen</button>
+      </div>
+
+      <!-- Tekenbalk voor telefoon -->
+      <div class="mobile-tools" role="toolbar" aria-label="Tekengereedschap">
+        <button class="tool" data-draw="Polygon" aria-label="Polygoon"><svg><use href="#i-polygon"/></svg><span>Polygoon</span></button>
+        <button class="tool" data-draw="Rectangle" aria-label="Rechthoek"><svg><use href="#i-rect"/></svg><span>Rechthoek</span></button>
+        <button class="tool" data-draw="Line" aria-label="Lijn"><svg><use href="#i-line"/></svg><span>Lijn</span></button>
+        <button class="tool" data-draw="Marker" aria-label="Punt"><svg><use href="#i-point"/></svg><span>Punt</span></button>
+        <button class="tool" data-draw="Circle" aria-label="Cirkel"><svg><use href="#i-circle"/></svg><span>Cirkel</span></button>
+      </div>
+
       <div id="printTitle"></div>
     </main>
 
-    <aside id="panel" hidden>
-      <header class="sb-header">
-        <h2 id="panelTitle">Object</h2>
-        <button id="closePanel" class="icon-btn" title="Sluiten">✕</button>
+    <aside id="panel" hidden aria-label="Objectgegevens">
+      <div class="sheet-grip"></div>
+      <header class="panel-head">
+        <div id="panelIcon" class="panel-icon"><svg><use href="#i-polygon"/></svg></div>
+        <div class="panel-titles">
+          <span id="panelTitle" class="panel-type">Polygoon</span>
+          <span id="panelName" class="panel-name">Object</span>
+        </div>
+        <button id="closePanel" class="icon-btn ghost" title="Sluiten" aria-label="Sluiten"><svg><use href="#i-x"/></svg></button>
       </header>
+
+      <div id="measure" class="measure"></div>
+
       <form id="featureForm">
-        <label>Naam<input name="name" required></label>
+        <div class="field">
+          <label for="f-name">Naam</label>
+          <input id="f-name" name="name" required>
+        </div>
         <div class="two">
-          <label>Soort
-            <select name="kind">
-              <option value="gebied">Gebied / projectvlak</option>
+          <div class="field">
+            <label for="f-kind">Soort</label>
+            <select id="f-kind" name="kind">
+              <option value="gebied">Gebied</option>
               <option value="asset">Asset</option>
             </select>
-          </label>
-          <label>Kleur<input name="color" type="color"></label>
-        </div>
-        <label>Categorie
-          <input name="category" list="categoryList" placeholder="bijv. Perceel, Gebouw, Kabel…">
-          <datalist id="categoryList"></datalist>
-        </label>
-        <div class="two">
-          <label>Status
-            <select name="status">
+          </div>
+          <div class="field">
+            <label for="f-status">Status</label>
+            <select id="f-status" name="status">
               <option>Gepland</option>
               <option>In uitvoering</option>
               <option>Gereed</option>
               <option>In beheer</option>
               <option>Buiten gebruik</option>
             </select>
-          </label>
-          <label>ID / Kenmerk<input name="ref" placeholder="bijv. A-0012"></label>
+          </div>
         </div>
-        <label>Notities<textarea name="notes" rows="4"></textarea></label>
-        <div id="measure" class="measure"></div>
-        <div id="coords" class="muted small-text"></div>
-        <div class="btn-row">
-          <button type="submit" class="primary">Opslaan</button>
-          <button type="button" id="zoomFeature">Zoom</button>
-          <button type="button" id="editShape">Vorm bewerken</button>
-          <button type="button" id="deleteFeature" class="danger">Verwijderen</button>
+        <div class="field">
+          <label for="f-category">Categorie</label>
+          <input id="f-category" name="category" list="categoryList" placeholder="Perceel, gebouw, kabel…">
+          <datalist id="categoryList"></datalist>
+        </div>
+        <div class="two">
+          <div class="field">
+            <label for="f-ref">Kenmerk</label>
+            <input id="f-ref" name="ref" placeholder="A-0012">
+          </div>
+          <div class="field">
+            <label for="f-color">Kleur</label>
+            <div class="color-field">
+              <input id="f-color" name="color" type="color">
+              <span id="colorHex" class="mono"></span>
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <label for="f-notes">Notities</label>
+          <textarea id="f-notes" name="notes" rows="3" placeholder="Opmerkingen, eigenaar, onderhoud…"></textarea>
+        </div>
+        <p id="coords" class="coords mono"></p>
+
+        <div class="panel-actions">
+          <button type="submit" class="btn primary block">Opslaan</button>
+          <div class="action-row">
+            <button type="button" id="zoomFeature" class="btn"><svg><use href="#i-target"/></svg>Zoom</button>
+            <button type="button" id="editShape" class="btn"><svg><use href="#i-vertex"/></svg>Vorm</button>
+            <button type="button" id="deleteFeature" class="btn danger"><svg><use href="#i-trash"/></svg>Verwijder</button>
+          </div>
         </div>
       </form>
     </aside>
@@ -123,13 +216,24 @@
   <dialog id="projectDialog">
     <form method="dialog" id="projectForm">
       <h2 id="projectDialogTitle">Nieuw project</h2>
-      <label>Naam<input name="name" required></label>
-      <label>Opdrachtgever / eigenaar<input name="client"></label>
-      <label>Omschrijving<textarea name="description" rows="3"></textarea></label>
-      <label>Standaardkleur<input name="color" type="color" value="#2563eb"></label>
-      <div class="btn-row end">
-        <button value="cancel" formnovalidate>Annuleren</button>
-        <button value="ok" class="primary">Opslaan</button>
+      <div class="field"><label for="p-name">Projectnaam</label><input id="p-name" name="name" required placeholder="bijv. Herinrichting Stationsplein"></div>
+      <div class="field"><label for="p-client">Opdrachtgever / eigenaar</label><input id="p-client" name="client"></div>
+      <div class="field"><label for="p-desc">Omschrijving</label><textarea id="p-desc" name="description" rows="3"></textarea></div>
+      <div class="field"><label>Projectkleur</label><div id="swatches" class="swatches"></div><input name="color" type="hidden" value="#0a6c8f"></div>
+      <div class="dialog-actions">
+        <button value="cancel" formnovalidate class="btn">Annuleren</button>
+        <button value="ok" class="btn primary">Opslaan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <h2 id="confirmTitle">Weet je het zeker?</h2>
+      <p id="confirmText"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn">Annuleren</button>
+        <button value="ok" class="btn danger-solid">Verwijderen</button>
       </div>
     </form>
   </dialog>

@@ -12,6 +12,22 @@
   ];
 
   const SHAPE_LABEL = { Polygon: 'Polygoon', Rectangle: 'Rechthoek', Line: 'Lijn', Marker: 'Punt', Circle: 'Cirkel' };
+  const SHAPE_ICON = { Polygon: 'i-polygon', Rectangle: 'i-rect', Line: 'i-line', Marker: 'i-point', Circle: 'i-circle' };
+  const DRAW_HINT = {
+    Polygon: 'Klik om hoekpunten te plaatsen · klik op het eerste punt om te sluiten',
+    Rectangle: 'Klik op twee tegenoverliggende hoeken',
+    Line: 'Klik om punten te plaatsen · klik op het laatste punt om af te ronden',
+    Marker: 'Klik op de kaart om het punt te plaatsen',
+    Circle: 'Klik op het middelpunt en daarna op de rand',
+  };
+  const STATUS_CLASS = {
+    'Gepland': 'st-gepland', 'In uitvoering': 'st-uitvoering', 'Gereed': 'st-gereed',
+    'In beheer': 'st-beheer', 'Buiten gebruik': 'st-buiten',
+  };
+  const PROJECT_COLORS = ['#0a6c8f', '#2f6fd6', '#6a4fc2', '#c2417a', '#d0532a', '#c28a12', '#3f8f3a', '#1f8a7a', '#5b6778'];
+  const shapeOf = (f) => SHAPE_ICON[f.shape] ? f.shape : (f.geometry.type.includes('Polygon') ? 'Polygon' : f.geometry.type.includes('Line') ? 'Line' : 'Marker');
+  const icon = (id) => `<svg><use href="#${id}"/></svg>`;
+  const isMobile = () => window.matchMedia('(max-width: 820px)').matches;
 
   // ---------------------------------------------------------------- Kaart
   const map = L.map('map', { zoomControl: true, doubleClickZoom: false }).setView([52.1, 5.3], 8);
@@ -70,13 +86,13 @@
   }
 
   function pinIcon(color, selected) {
-    const size = selected ? 34 : 28;
+    const size = selected ? 36 : 30;
     return L.divIcon({
       className: 'asset-pin',
       iconSize: [size, size],
       iconAnchor: [size / 2, size],
       tooltipAnchor: [0, -size],
-      html: `<svg viewBox="0 0 24 24" width="${size}" height="${size}"><path fill="${esc(color)}" stroke="#fff" stroke-width="1.5" d="M12 1.5a7.5 7.5 0 0 0-7.5 7.5c0 5.6 7.5 13.5 7.5 13.5s7.5-7.9 7.5-13.5A7.5 7.5 0 0 0 12 1.5z"/><circle cx="12" cy="9" r="2.8" fill="#fff"/></svg>`,
+      html: `<svg viewBox="0 0 24 24"><path style="fill:${esc(color)};stroke:#fff;stroke-width:1.6" d="M12 1.5a7.5 7.5 0 0 0-7.5 7.5c0 5.6 7.5 13.5 7.5 13.5s7.5-7.9 7.5-13.5A7.5 7.5 0 0 0 12 1.5z"/><circle cx="12" cy="9" r="2.8" style="fill:#fff"/></svg>`,
     });
   }
 
@@ -152,19 +168,25 @@
   const fmtArea = (m2) => m2 >= 10000 ? `${nf(m2 / 10000, 2)} ha (${nf(m2)} m²)` : `${nf(m2, 1)} m²`;
   const fmtLen = (m) => m >= 1000 ? `${nf(m / 1000, 2)} km` : `${nf(m, 1)} m`;
 
+  // Waarde + eenheid los, voor nette meetwaarden
+  const areaParts = (m2) => m2 >= 10000 ? [nf(m2 / 10000, 2), 'ha', `${nf(m2)} m²`] : [nf(m2, 1), 'm²', ''];
+  const lenParts = (m) => m >= 1000 ? [nf(m / 1000, 2), 'km', `${nf(m)} m`] : [nf(m, 1), 'm', ''];
+
   function measureText(f, short) {
     const m = measure(f);
     if (short) {
-      if (m.area != null) return fmtArea(m.area).split(' (')[0];
-      if (m.length != null) return fmtLen(m.length);
+      if (m.area != null) return areaParts(m.area).slice(0, 2).join(' ');
+      if (m.length != null) return lenParts(m.length).slice(0, 2).join(' ');
       return '';
     }
+    const tile = (label, [v, u, extra]) =>
+      `<div><div class="m-label">${label}</div><div class="m-value">${v}<span class="m-unit">${u}</span></div>${extra ? `<div class="m-extra">${extra}</div>` : ''}</div>`;
     const rows = [];
-    if (m.area != null) rows.push(`<b>Oppervlakte:</b> ${fmtArea(m.area)}`);
-    if (m.perimeter != null) rows.push(`<b>Omtrek:</b> ${fmtLen(m.perimeter)}`);
-    if (m.radius != null) rows.push(`<b>Straal:</b> ${fmtLen(m.radius)}`);
-    if (m.length != null) rows.push(`<b>Lengte:</b> ${fmtLen(m.length)}`);
-    return rows.join('<br>');
+    if (m.area != null) rows.push(tile('Oppervlakte', areaParts(m.area)));
+    if (m.perimeter != null) rows.push(tile('Omtrek', lenParts(m.perimeter)));
+    if (m.radius != null) rows.push(tile('Straal', lenParts(m.radius)));
+    if (m.length != null) rows.push(tile('Lengte', lenParts(m.length)));
+    return rows.join('');
   }
 
   // ---------------------------------------------------------------- Lagen
@@ -261,11 +283,14 @@
   const drawButtons = document.querySelectorAll('[data-draw]');
   function setDrawButton(shape) {
     drawButtons.forEach(b => b.classList.toggle('active', b.dataset.draw === shape));
+    $('#drawHint').hidden = !shape;
+    if (shape) $('#drawHintText').textContent = DRAW_HINT[shape] || '';
   }
   drawButtons.forEach(btn => btn.addEventListener('click', () => {
     if (!Store.activeProject()) { toast('Maak eerst een project aan'); return; }
     const shape = btn.dataset.draw;
     if (map.pm.Draw[shape]?.enabled()) { map.pm.disableDraw(); setDrawButton(null); return; }
+    closePanel();
     const color = Store.activeProject().color;
     map.pm.enableDraw(shape, {
       pathOptions: { color, fillColor: color, fillOpacity: 0.2 },
@@ -291,9 +316,21 @@
       `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
     projectSelect.value = Store.state.activeProjectId || '';
     const p = Store.activeProject();
+    $('#projectSwatch').style.background = p?.color || 'var(--faint)';
     $('#projectMeta').innerHTML = p
-      ? [p.client && `Opdrachtgever: ${esc(p.client)}`, p.description && esc(p.description)].filter(Boolean).join('<br>')
-      : 'Nog geen project. Klik op “+ Nieuw”.';
+      ? [p.client && `<strong>${esc(p.client)}</strong>`, p.description && esc(p.description)].filter(Boolean).join(' · ')
+      : 'Nog geen project. Klik op “Nieuw”.';
+  }
+
+  function renderStats() {
+    const p = Store.activeProject();
+    const feats = p ? Store.features(p.id) : [];
+    let area = 0, length = 0;
+    feats.forEach(f => { const m = measure(f); area += m.area || 0; length += m.length || 0; });
+    const set = (k, v) => { $(`#projectStats [data-stat="${k}"]`).textContent = v; };
+    set('count', feats.length);
+    set('area', area ? areaParts(area).slice(0, 2).join(' ') : '–');
+    set('length', length ? lenParts(length).slice(0, 2).join(' ') : '–');
   }
 
   projectSelect.addEventListener('change', () => {
@@ -307,18 +344,41 @@
   const projectForm = $('#projectForm');
   let editingProjectId = null;
 
+  const swatchesEl = $('#swatches');
+  function setSwatch(color) {
+    projectForm.color.value = color;
+    swatchesEl.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.color === color));
+  }
+  swatchesEl.innerHTML = PROJECT_COLORS.map(c =>
+    `<button type="button" data-color="${c}" style="background:${c}" aria-label="Kleur ${c}"></button>`).join('');
+  swatchesEl.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-color]');
+    if (b) setSwatch(b.dataset.color);
+  });
+
   function openProjectDialog(project) {
     editingProjectId = project?.id ?? null;
     $('#projectDialogTitle').textContent = project ? 'Project bewerken' : 'Nieuw project';
     projectForm.reset();
-    if (project) {
-      projectForm.name.value = project.name || '';
-      projectForm.client.value = project.client || '';
-      projectForm.description.value = project.description || '';
-      projectForm.color.value = project.color || '#2563eb';
-    }
+    projectForm.name.value = project?.name || '';
+    projectForm.client.value = project?.client || '';
+    projectForm.description.value = project?.description || '';
+    const used = new Set(Store.projects().map(p => p.color));
+    setSwatch(project?.color || PROJECT_COLORS.find(c => !used.has(c)) || PROJECT_COLORS[0]);
     projectDialog.showModal();
     projectForm.name.focus();
+  }
+
+  // Eigen bevestigingsvenster in plaats van confirm()
+  const confirmDialog = $('#confirmDialog');
+  function askConfirm(title, text) {
+    $('#confirmTitle').textContent = title;
+    $('#confirmText').textContent = text;
+    confirmDialog.returnValue = '';
+    confirmDialog.showModal();
+    return new Promise(resolve => {
+      confirmDialog.addEventListener('close', () => resolve(confirmDialog.returnValue === 'ok'), { once: true });
+    });
   }
 
   projectDialog.addEventListener('close', () => {
@@ -345,11 +405,11 @@
     const p = Store.activeProject();
     if (p) openProjectDialog(p);
   });
-  $('#deleteProject').addEventListener('click', () => {
+  $('#deleteProject').addEventListener('click', async () => {
     const p = Store.activeProject();
     if (!p) return;
     const n = Store.features(p.id).length;
-    if (!confirm(`Project “${p.name}” en ${n} object(en) definitief verwijderen?`)) return;
+    if (!await askConfirm('Project verwijderen?', `“${p.name}” en ${n} object(en) worden definitief verwijderd. Maak eventueel eerst een GeoJSON-export.`)) return;
     Store.deleteProject(p.id);
     closePanel();
     refreshAll();
@@ -367,7 +427,7 @@
   function renderList() {
     const p = Store.activeProject();
     const q = $('#search').value.trim().toLowerCase();
-    const type = $('#typeFilter').value;
+    const type = typeFilter;
     const all = p ? Store.features(p.id) : [];
     const items = all.filter(f => {
       if (type && f.props.kind !== type) return false;
@@ -376,28 +436,45 @@
         .some(v => String(v || '').toLowerCase().includes(q));
     });
     $('#featureCount').textContent = all.length;
+    renderStats();
     if (!items.length) {
-      listEl.innerHTML = `<li class="empty">${all.length ? 'Geen resultaten.' : 'Nog geen objecten. Teken een polygoon of plaats een punt.'}</li>`;
+      listEl.innerHTML = all.length
+        ? `<li class="empty"><strong>Geen resultaten</strong><span>Pas je zoekterm of filter aan.</span></li>`
+        : `<li class="empty">${icon('i-empty')}<strong>Nog geen objecten</strong><span>Kies een tekengereedschap en klik op de kaart om je eerste gebied of asset vast te leggen.</span></li>`;
       return;
     }
-    listEl.innerHTML = items.map(f => `
+    listEl.innerHTML = items.map(f => {
+      const c = colorOf(f);
+      const st = f.props.status ? `<span class="status ${STATUS_CLASS[f.props.status] || ''}">${esc(f.props.status)}</span>` : '';
+      const sub = [f.props.category && esc(f.props.category), st].filter(Boolean).join(' · ');
+      return `
       <li data-id="${esc(f.id)}" class="${f.id === selectedId ? 'selected' : ''}">
-        <span class="swatch" style="background:${esc(colorOf(f))}"></span>
-        <span class="info">
-          <div class="name">${esc(f.props.name || '(naamloos)')}</div>
-          <div class="sub">${esc([f.props.category, f.props.status, measureText(f, true)].filter(Boolean).join(' · '))}</div>
+        <span class="f-icon" style="color:${esc(c)};background:${esc(c)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
+        <span class="f-main">
+          <div class="f-name">${esc(f.props.name || '(naamloos)')}</div>
+          <div class="f-sub">${sub}</div>
         </span>
-      </li>`).join('');
+        <span class="f-measure">${esc(measureText(f, true))}</span>
+      </li>`;
+    }).join('');
   }
 
   listEl.addEventListener('click', (e) => {
     const li = e.target.closest('li[data-id]');
     if (!li) return;
+    if (isMobile()) closeSidebar();
     select(li.dataset.id);
     zoomTo(li.dataset.id);
   });
   $('#search').addEventListener('input', renderList);
-  $('#typeFilter').addEventListener('change', renderList);
+  let typeFilter = '';
+  $('#typeFilter').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-filter]');
+    if (!b) return;
+    typeFilter = b.dataset.filter;
+    $('#typeFilter').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    renderList();
+  });
 
   // ---------------------------------------------------------------- Eigenschappenpaneel
   const panel = $('#panel');
@@ -423,19 +500,32 @@
     form.ref.value = f.props.ref || '';
     form.notes.value = f.props.notes || '';
     form.color.value = colorOf(f);
-    $('#panelTitle').textContent = `${SHAPE_LABEL[f.shape] || f.geometry.type}`;
+    renderPanelHead(f);
     renderMeasure(f);
     panel.hidden = false;
     map.invalidateSize();
     renderList();
-    if (opts.focusName) { form.name.focus(); form.name.select(); }
+    if (opts.focusName && !isMobile()) { form.name.focus(); form.name.select(); }
+  }
+
+  function renderPanelHead(f) {
+    const shape = shapeOf(f);
+    const c = colorOf(f);
+    const kind = f.props.kind === 'asset' ? 'Asset' : 'Gebied';
+    $('#panelTitle').textContent = `${kind} · ${SHAPE_LABEL[shape]}`;
+    $('#panelName').textContent = f.props.name || '(naamloos)';
+    const ic = $('#panelIcon');
+    ic.innerHTML = icon(SHAPE_ICON[shape]);
+    ic.style.color = c;
+    ic.style.background = c + '1f';
+    $('#colorHex').textContent = c;
   }
 
   function renderMeasure(f) {
     $('#measure').innerHTML = measureText(f);
     let c;
     try { c = turf.centroid(f.geometry).geometry.coordinates; } catch (e) { c = null; }
-    $('#coords').textContent = c ? `Middelpunt: ${c[1].toFixed(6)}, ${c[0].toFixed(6)} (WGS84)` : '';
+    $('#coords').textContent = c ? `${c[1].toFixed(6)}° N, ${c[0].toFixed(6)}° O · WGS84` : '';
   }
 
   function closePanel() {
@@ -466,6 +556,7 @@
       },
     });
     applyStyle(f);
+    renderPanelHead(f);
     renderList();
     renderCategories();
     toast('Opgeslagen');
@@ -476,13 +567,14 @@
     if (!f) return;
     f.props.color = form.color.value;
     applyStyle(f);
+    renderPanelHead(f);
   });
 
   $('#closePanel').addEventListener('click', closePanel);
   $('#zoomFeature').addEventListener('click', () => zoomTo(selectedId));
-  $('#deleteFeature').addEventListener('click', () => {
+  $('#deleteFeature').addEventListener('click', async () => {
     const f = Store.feature(selectedId);
-    if (!f || !confirm(`“${f.props.name}” verwijderen?`)) return;
+    if (!f || !await askConfirm('Object verwijderen?', `“${f.props.name || 'Naamloos'}” wordt definitief van de kaart verwijderd.`)) return;
     featureLayers.get(f.id)?.remove();
     featureLayers.delete(f.id);
     Store.deleteFeature(f.id);
@@ -653,7 +745,7 @@
       const data = await res.json();
       const docs = data.response?.docs || [];
       gcResults.innerHTML = docs.length
-        ? docs.map(d => `<li data-ll="${esc(d.centroide_ll)}" data-type="${esc(d.type)}">${esc(d.weergavenaam)} <span class="muted">· ${esc(d.type)}</span></li>`).join('')
+        ? docs.map(d => `<li data-ll="${esc(d.centroide_ll)}" data-type="${esc(d.type)}"><span>${esc(d.weergavenaam)}</span><span class="gc-type">${esc(d.type)}</span></li>`).join('')
         : '<li>Niets gevonden</li>';
     } catch (e) {
       if (e.name !== 'AbortError') gcResults.innerHTML = '<li>Zoeken niet beschikbaar</li>';
@@ -687,13 +779,13 @@
   const LabelControl = L.Control.extend({
     options: { position: 'topright' },
     onAdd() {
-      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-      div.innerHTML = '<a href="#" title="Labels tonen/verbergen" role="button" style="font-weight:700;width:auto;padding:0 8px">Aa</a>';
+      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control label-ctl');
+      div.innerHTML = '<a href="#" title="Labels tonen/verbergen" role="button">Labels</a>';
       L.DomEvent.disableClickPropagation(div);
       div.firstChild.addEventListener('click', (e) => {
         e.preventDefault();
         showLabels = !showLabels;
-        div.firstChild.style.opacity = showLabels ? 1 : 0.5;
+        div.firstChild.classList.toggle('off', !showLabels);
         (Store.activeProject() ? Store.features(Store.activeProject().id) : []).forEach(applyStyle);
       });
       return div;
@@ -701,10 +793,20 @@
   });
   new LabelControl().addTo(map);
 
-  $('#toggleSidebar').addEventListener('click', () => {
-    $('#sidebar').classList.toggle('collapsed');
-    setTimeout(() => map.invalidateSize(), 250);
-  });
+  // Zijbalk: inklappen op desktop, schuiflade op telefoon
+  const sidebar = $('#sidebar');
+  const backdrop = $('#sidebarBackdrop');
+  function openSidebar() {
+    if (isMobile()) { sidebar.classList.add('open'); backdrop.classList.add('show'); }
+    else { sidebar.classList.remove('collapsed'); document.body.classList.remove('sidebar-collapsed'); setTimeout(() => map.invalidateSize(), 250); }
+  }
+  function closeSidebar() {
+    if (isMobile()) { sidebar.classList.remove('open'); backdrop.classList.remove('show'); }
+    else { sidebar.classList.add('collapsed'); document.body.classList.add('sidebar-collapsed'); setTimeout(() => map.invalidateSize(), 250); }
+  }
+  $('#toggleSidebar').addEventListener('click', closeSidebar);
+  $('#openSidebar').addEventListener('click', openSidebar);
+  backdrop.addEventListener('click', closeSidebar);
 
   // ---------------------------------------------------------------- Toast
   let toastTimer;
@@ -725,7 +827,7 @@
   }
 
   if (!Store.projects().length) {
-    Store.addProject({ name: 'Mijn eerste project', description: 'Teken een polygoon om te beginnen.', color: '#2563eb' });
+    Store.addProject({ name: 'Mijn eerste project', description: 'Teken een polygoon om te beginnen.', color: '#0a6c8f' });
   } else if (!Store.activeProject()) {
     Store.setActive(Store.projects()[0].id);
   }
