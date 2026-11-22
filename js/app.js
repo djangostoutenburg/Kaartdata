@@ -314,9 +314,12 @@
     $('#drawFinish').disabled = multi && n < (drawShape === 'Polygon' ? 3 : 2);
     $('#drawGps').hidden = !(multi || drawShape === 'Marker') || !('geolocation' in navigator);
     $('#cancelDraw').hidden = !!editLayer;
-    $('#pickNext').hidden = !picking || pickCandidates.length < 2;
-    $('#pickAccept').hidden = !picking || !pickCandidates.length;
-    if (picking && pickCandidates.length > 1) $('#pickNext').querySelector('span').textContent = `Andere (${pickIndex + 1}/${pickCandidates.length})`;
+    $('#pickNext').hidden = !picking || !pickLast || pickLast.candidates.length < 2;
+    $('#pickMerge').hidden = !picking || pickSel.length < 2;
+    $('#pickMerge').classList.toggle('on', pickMerge);
+    $('#pickAccept').hidden = !picking || !pickSel.length;
+    if (picking && pickLast && pickLast.candidates.length > 1) $('#pickNext').querySelector('span').textContent = `Andere (${pickLast.index + 1}/${pickLast.candidates.length})`;
+    if (picking) $('#pickAccept').querySelector('span').textContent = pickSel.length > 1 && !isMobile() ? `Overnemen (${pickSel.length})` : 'Overnemen';
     if (multi && n > 0) {
       const need = drawShape === 'Polygon' ? 3 : 2;
       $('#drawHintText').textContent = n < need
@@ -510,12 +513,17 @@
       }, current: (p) => !p.status_historie_waarde || p.status_historie_waarde === 'Geldig' },
   ];
 
+  // Meerdere vlakken selecteren: elke tik voegt een vlak toe aan de selectie,
+  // opnieuw tikken op een geselecteerd vlak haalt het weer weg.
   let picking = false;
-  let pickCandidates = [];
-  let pickIndex = 0;
-  let pickLayer = null;
+  let pickSel = [];          // [{ candidates, index, layer }]
+  let pickLast = null;       // laatst toegevoegde (voor "Andere")
+  let pickMerge = false;     // samenvoegen tot één vlak bij overnemen
+  let pickPending = 0;
   let pickCtrl = null;
+  let pickMsg = '';
   const pickButtons = document.querySelectorAll('[data-pick]');
+  const candOf = (e) => e.candidates[e.index];
 
   function startPick() {
     if (!Store.activeProject()) { toast('Maak eerst een project aan'); return; }
@@ -523,31 +531,58 @@
     stopEditing();
     closePanel();
     picking = true;
-    pickCandidates = [];
+    pickSel = [];
+    pickLast = null;
+    pickMsg = '';
+    pickCtrl = new AbortController();
     pickButtons.forEach(b => b.classList.add('active'));
     hint.hidden = false;
     document.body.classList.add('drawing');
-    $('#drawHintText').innerHTML = `${isMobile() ? 'Tik' : 'Klik'} op een grasveld, pad, gebouw, water of perceel`;
-    updateHintButtons();
+    renderPickStatus();
     if (map.getZoom() < 16) toast('Zoom ver genoeg in om een vlak precies te kiezen');
-  }
-
-  function clearPickPreview() {
-    if (pickLayer) { pickLayer.remove(); pickLayer = null; }
   }
 
   function stopPick() {
     if (!picking) return;
     picking = false;
     pickCtrl?.abort();
-    clearPickPreview();
-    pickCandidates = [];
+    pickSel.forEach(e => e.layer.remove());
+    pickSel = [];
+    pickLast = null;
+    pickPending = 0;
     pickButtons.forEach(b => b.classList.remove('active'));
     hint.classList.remove('loading');
     setDrawButton(null);
   }
 
   pickButtons.forEach(b => b.addEventListener('click', () => { if (picking) stopPick(); else startPick(); }));
+
+  function renderPickStatus() {
+    hint.classList.toggle('loading', pickPending > 0);
+    const verb = isMobile() ? 'Tik' : 'Klik';
+    let html;
+    if (pickPending > 0 && !pickSel.length) {
+      html = 'Vlakken zoeken';
+    } else if (!pickSel.length) {
+      html = pickMsg || `${verb} op grasvelden, paden, gebouwen, water of percelen<small>Je kunt meerdere vlakken achter elkaar kiezen</small>`;
+    } else {
+      const area = pickSel.reduce((t, e) => t + candOf(e).area, 0);
+      const [v, u] = areaParts(area);
+      const n = pickSel.length;
+      const last = pickLast ? candOf(pickLast) : null;
+      const sub = pickMsg || (last ? `Laatste: ${last.info.name} · ${last.info.source}` : `${verb} opnieuw op een vlak om het weg te halen`);
+      html = `<strong>${n} ${n === 1 ? 'vlak' : 'vlakken'}</strong> · ${v} ${u}<small>${esc(sub)}</small>`;
+    }
+    $('#drawHintText').innerHTML = html;
+    updateHintButtons();
+  }
+
+  function selStyle(c, latest) {
+    return { color: c.info.color, weight: latest ? 3.5 : 2.5, fillColor: c.info.color, fillOpacity: 0.4, dashArray: latest ? '6 4' : null };
+  }
+  function restyleSelection() {
+    pickSel.forEach(e => e.layer.setStyle(selStyle(candOf(e), e === pickLast)));
+  }
 
   async function fetchSource(src, latlng, signal) {
     const d = 0.00002; // ± 1,5 m rond het getikte punt
@@ -566,75 +601,139 @@
         if (geometry.type === 'MultiPolygon' && geometry.coordinates.length === 1) {
           geometry = { type: 'Polygon', coordinates: geometry.coordinates[0] };
         }
-        return { geometry, area: turf.area(geometry), info: src.describe(f.properties), id: f.properties.lokaal_id || f.properties.identificatie_lokaal_id || f.id };
+        const id = f.properties.lokaal_id || f.properties.identificatie_lokaal_id || f.id;
+        return { geometry, area: turf.area(geometry), info: src.describe(f.properties), id: `${src.id}:${id}`, srcId: id };
       });
   }
 
+  const selectedIds = (except) => new Set(pickSel.filter(e => e !== except).map(e => candOf(e).id));
+
   async function pickAt(latlng) {
-    pickCtrl?.abort();
-    pickCtrl = new AbortController();
-    const signal = pickCtrl.signal;
-    clearPickPreview();
-    pickCandidates = [];
-    hint.classList.add('loading');
-    $('#drawHintText').textContent = 'Vlakken zoeken';
-    updateHintButtons();
-    const results = await Promise.allSettled(PICK_SOURCES.map(src => fetchSource(src, latlng, signal)));
-    if (signal.aborted || !picking) return;
-    hint.classList.remove('loading');
-    const found = results.filter(r => r.status === 'fulfilled').flatMap(r => r.value);
-    const failed = results.filter(r => r.status === 'rejected').length;
-    // Kleinste vlak eerst: dat is meestal het grasveld/pad waar je op tikte, het perceel komt daarna
-    pickCandidates = found.sort((a, b) => a.area - b.area);
-    pickIndex = 0;
-    if (!pickCandidates.length) {
-      $('#drawHintText').innerHTML = failed === PICK_SOURCES.length
-        ? 'PDOK is niet bereikbaar. Controleer je internetverbinding.'
-        : 'Geen vlak gevonden op deze plek. Tik op een andere plek.';
-      updateHintButtons();
+    // Tik op een vlak dat al geselecteerd is: weghalen
+    const pt = turf.point([latlng.lng, latlng.lat]);
+    const hit = [...pickSel].reverse().find(e => { try { return turf.booleanPointInPolygon(pt, candOf(e).geometry); } catch (err) { return false; } });
+    if (hit) {
+      hit.layer.remove();
+      pickSel = pickSel.filter(e => e !== hit);
+      if (pickLast === hit) pickLast = pickSel[pickSel.length - 1] || null;
+      pickMsg = `${candOf(hit).info.name} weggehaald`;
+      restyleSelection();
+      renderPickStatus();
+      pickMsg = '';
       return;
     }
-    showCandidate();
-  }
 
-  function showCandidate() {
-    clearPickPreview();
-    const c = pickCandidates[pickIndex];
-    pickLayer = L.geoJSON(c.geometry, {
-      pmIgnore: true, interactive: false,
-      style: { color: c.info.color, weight: 3, fillColor: c.info.color, fillOpacity: 0.35, dashArray: '6 4' },
-    }).addTo(map);
-    const [v, u] = areaParts(c.area);
-    $('#drawHintText').innerHTML = `<strong>${esc(c.info.name)}</strong> · ${v} ${u}<small>${esc([c.info.extra, c.info.source].filter(Boolean).join(' · '))}</small>`;
-    updateHintButtons();
-    // Zorg dat het hele vlak in beeld is (rekening houdend met de balk onderin op telefoon)
-    const b = pickLayer.getBounds();
-    if (!map.getBounds().contains(b)) {
-      map.fitBounds(b, { paddingTopLeft: [40, 80], paddingBottomRight: [40, isMobile() ? 200 : 60], maxZoom: map.getZoom() });
+    const signal = pickCtrl.signal;
+    pickPending++;
+    pickMsg = '';
+    renderPickStatus();
+    const results = await Promise.allSettled(PICK_SOURCES.map(src => fetchSource(src, latlng, signal)));
+    if (signal.aborted || !picking) return;
+    pickPending--;
+    const failed = results.filter(r => r.status === 'rejected').length;
+    // Kleinste vlak eerst: dat is meestal het grasveld/pad waar je op tikte, het perceel komt daarna
+    const taken = selectedIds();
+    const candidates = results.filter(r => r.status === 'fulfilled').flatMap(r => r.value)
+      .filter(c => !taken.has(c.id))
+      .sort((a, b) => a.area - b.area);
+    if (!candidates.length) {
+      pickMsg = failed === PICK_SOURCES.length
+        ? 'PDOK is niet bereikbaar. Controleer je internetverbinding.'
+        : 'Geen (nieuw) vlak gevonden op deze plek';
+      renderPickStatus();
+      pickMsg = '';
+      return;
     }
+    const entry = { candidates, index: 0, layer: null };
+    entry.layer = L.geoJSON(candidates[0].geometry, { pmIgnore: true, interactive: false, style: selStyle(candidates[0], true) }).addTo(map);
+    pickSel.push(entry);
+    pickLast = entry;
+    restyleSelection();
+    renderPickStatus();
   }
 
   $('#pickNext').addEventListener('click', () => {
-    if (!pickCandidates.length) return;
-    pickIndex = (pickIndex + 1) % pickCandidates.length;
-    showCandidate();
+    const e = pickLast;
+    if (!e || e.candidates.length < 2) return;
+    const taken = selectedIds(e);
+    for (let i = 1; i <= e.candidates.length; i++) {
+      const j = (e.index + i) % e.candidates.length;
+      if (!taken.has(e.candidates[j].id)) { e.index = j; break; }
+    }
+    e.layer.remove();
+    e.layer = L.geoJSON(candOf(e).geometry, { pmIgnore: true, interactive: false, style: selStyle(candOf(e), true) }).addTo(map);
+    const b = e.layer.getBounds();
+    if (!map.getBounds().contains(b)) {
+      map.fitBounds(b, { paddingTopLeft: [40, 80], paddingBottomRight: [40, isMobile() ? 200 : 60], maxZoom: map.getZoom() });
+    }
+    renderPickStatus();
   });
 
-  $('#pickAccept').addEventListener('click', () => {
-    const c = pickCandidates[pickIndex];
-    if (!c) return;
+  $('#pickMerge').addEventListener('click', () => {
+    pickMerge = !pickMerge;
+    toast(pickMerge ? 'Samenvoegen aan: de vlakken worden één gebied' : 'Samenvoegen uit: elk vlak wordt een los object');
+    updateHintButtons();
+  });
+
+  function propsFromCandidate(c) {
     const info = c.info;
-    const layer = L.GeoJSON.geometryToLayer({ type: 'Feature', geometry: c.geometry, properties: {} });
-    stopPick();
-    createFromLayer('Polygon', layer, {
+    return {
       name: info.name,
       kind: info.kind,
       category: info.category,
       ref: info.ref || '',
       color: info.color,
       status: 'In beheer',
-      notes: `Overgenomen uit ${info.source}${c.id ? ` (id ${c.id})` : ''} op ${new Date().toLocaleDateString('nl-NL')}.${info.extra ? `\n${cap(info.extra)}.` : ''}`,
+      notes: `Overgenomen uit ${info.source}${c.srcId ? ` (id ${c.srcId})` : ''} op ${new Date().toLocaleDateString('nl-NL')}.${info.extra ? `\n${cap(info.extra)}.` : ''}`,
+    };
+  }
+
+  $('#pickAccept').addEventListener('click', () => {
+    const p = Store.activeProject();
+    const cands = pickSel.map(candOf);
+    if (!p || !cands.length) return;
+
+    // Eén vlak, of samenvoegen tot één gebied
+    if (cands.length === 1 || pickMerge) {
+      let geometry = cands[0].geometry;
+      let props = propsFromCandidate(cands[0]);
+      if (cands.length > 1) {
+        let merged = null;
+        try { merged = turf.union(turf.featureCollection(cands.map(c => turf.feature(c.geometry)))); } catch (err) { merged = null; }
+        if (!merged) { toast('Samenvoegen lukte niet; probeer de vlakken los over te nemen'); return; }
+        geometry = merged.geometry;
+        const same = (k) => cands.every(c => c.info[k] === cands[0].info[k]);
+        const date = new Date().toLocaleDateString('nl-NL');
+        props = {
+          ...props,
+          name: same('name') ? cands[0].info.name : `Samengevoegd gebied`,
+          category: same('category') ? cands[0].info.category : cands[0].info.category,
+          kind: 'gebied',
+          ref: '',
+          notes: `Samengevoegd uit ${cands.length} vlakken op ${date}:\n` +
+            cands.map(c => `- ${c.info.name} (${c.info.source}${c.srcId ? `, id ${c.srcId}` : ''})`).join('\n'),
+        };
+      }
+      const layer = L.GeoJSON.geometryToLayer({ type: 'Feature', geometry, properties: {} });
+      stopPick();
+      createFromLayer('Polygon', layer, props);
+      if (cands.length > 1) toast(`${cands.length} vlakken samengevoegd tot één gebied`);
+      return;
+    }
+
+    // Meerdere losse objecten
+    const created = cands.map(c => {
+      const f = Store.addFeature({ projectId: p.id, shape: 'Polygon', geometry: c.geometry, props: propsFromCandidate(c) });
+      attachLayer(f);
+      return f;
     });
+    stopPick();
+    renderList();
+    renderCategories();
+    const b = L.latLngBounds([]);
+    created.forEach(f => { const l = featureLayers.get(f.id); if (l?.getBounds) b.extend(l.getBounds()); });
+    if (b.isValid() && !map.getBounds().contains(b)) map.fitBounds(b, { padding: [40, 40], maxZoom: map.getZoom() });
+    toast(`${created.length} vlakken overgenomen`);
   });
 
   // ---------------------------------------------------------------- Projecten

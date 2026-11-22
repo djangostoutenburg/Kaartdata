@@ -283,6 +283,8 @@ body.sidebar-collapsed #openSidebar { display: grid; }
 .hint-btn.primary { background: var(--accent); color: #fff; }
 .hint-btn.primary:hover { background: var(--accent-hover); }
 .hint-btn:disabled { opacity: .4; cursor: default; }
+.hint-btn.toggle.on { background: #fff; color: var(--ink); }
+.hint-btn.toggle.on svg .fill, .hint-btn.toggle.on svg { color: var(--ink); }
 
 .locate-btn { position: absolute; z-index: 900; right: 12px; bottom: 64px; }
 .locate-btn svg { width: 20px; height: 20px; }

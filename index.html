@@ -45,6 +45,7 @@
       <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
       <symbol id="i-pick" viewBox="0 0 24 24"><path d="M9 9l11 4.2-4.6 1.6L13.8 19.5z"/><path d="M4.5 4.5l2 2M9 2.5v2.8M2.5 9h2.8M13.2 4.2l-1.6 1.6M4.2 13.2l1.6-1.6"/></symbol>
+      <symbol id="i-merge" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="10" height="10" rx="1"/><rect x="10.5" y="10.5" width="10" height="10" rx="1"/></symbol>
       <symbol id="i-next" viewBox="0 0 24 24"><path d="M4 12h13M13 7l5 5-5 5"/></symbol>
       <symbol id="i-empty" viewBox="0 0 48 48"><path d="M10 34l6-20 18 4 4 16z" stroke-dasharray="3 3"/><circle cx="10" cy="34" r="2.2" class="fill"/><circle cx="16" cy="14" r="2.2" class="fill"/><circle cx="34" cy="18" r="2.2" class="fill"/></symbol>
     </defs>
@@ -143,7 +144,8 @@
           <button id="drawGps" class="hint-btn" hidden title="Punt op mijn GPS-locatie"><svg><use href="#i-gps"/></svg><span>GPS-punt</span></button>
           <button id="drawFinish" class="hint-btn primary" hidden title="Vorm afronden"><svg><use href="#i-check"/></svg><span>Klaar</span></button>
           <button id="pickNext" class="hint-btn" hidden title="Ander vlak op deze plek"><svg><use href="#i-next"/></svg><span>Andere</span></button>
-          <button id="pickAccept" class="hint-btn primary" hidden title="Dit vlak overnemen"><svg><use href="#i-check"/></svg><span>Overnemen</span></button>
+          <button id="pickMerge" class="hint-btn toggle" hidden title="Geselecteerde vlakken samenvoegen tot één gebied"><svg><use href="#i-merge"/></svg><span>Samenvoegen</span></button>
+          <button id="pickAccept" class="hint-btn primary" hidden title="Geselecteerde vlakken overnemen"><svg><use href="#i-check"/></svg><span>Overnemen</span></button>
           <button id="cancelDraw" class="hint-btn" title="Stoppen (Esc)"><svg><use href="#i-x"/></svg><span>Stop</span></button>
         </div>
       </div>
