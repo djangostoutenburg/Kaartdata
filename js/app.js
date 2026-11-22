@@ -1004,6 +1004,7 @@
   const form = $('#featureForm');
 
   function select(id, opts = {}) {
+    flushSave();
     if (editLayer && editLayer !== featureLayers.get(id)) stopEditing();
     const prev = selectedId;
     selectedId = id;
@@ -1025,6 +1026,7 @@
     form.notes.value = f.props.notes || '';
     form.color.value = colorOf(f);
     renderPanelHead(f);
+    $('#saveState').textContent = 'Wijzigingen worden automatisch bewaard';
     renderMeasure(f);
     panel.hidden = false;
     map.invalidateSize();
@@ -1053,6 +1055,7 @@
   }
 
   function closePanel() {
+    flushSave();
     if (editLayer) stopEditing();
     if (selectedId) {
       featureLayers.get(selectedId)?.pm?.disable();
@@ -1064,8 +1067,11 @@
     renderList();
   }
 
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
+  // Gegevens bewaren: direct tijdens het typen (na een korte pauze) en bij sluiten/wisselen
+  let saveTimer = null;
+  function saveForm(showToast) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
     const f = Store.feature(selectedId);
     if (!f) return;
     Store.updateFeature(f.id, {
@@ -1084,8 +1090,19 @@
     renderPanelHead(f);
     renderList();
     renderCategories();
-    toast('Opgeslagen');
-  });
+    $('#saveState').textContent = 'Bewaard';
+    if (showToast) toast('Opgeslagen');
+  }
+  function flushSave() { if (saveTimer) saveForm(false); }
+  window.addEventListener('pagehide', flushSave);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(); });
+  form.addEventListener('submit', (e) => { e.preventDefault(); saveForm(true); });
+  ['input', 'change'].forEach(t => form.addEventListener(t, (e) => {
+    if (e.target === form.color && t === 'input') return;   // kleur heeft eigen live-voorbeeld
+    $('#saveState').textContent = 'Bewaren…';
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveForm(false), 500);
+  }));
   // Kleur direct tonen tijdens kiezen
   form.color.addEventListener('input', () => {
     const f = Store.feature(selectedId);
@@ -1271,60 +1288,101 @@
   let gcTimer = null;
   let gcCtrl = null;
 
-  // Eigen objecten (alle projecten) die passen bij de zoekterm: kenmerk eerst, dan naam
+  // Eigen objecten (alle projecten) die passen bij de zoekterm.
+  // Hoofdletters, spaties, streepjes en punten maken niet uit: "up 1234" vindt "UP-1234".
+  const normQ = (v) => String(v ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
   function searchObjects(q) {
-    // Hoofdletters, spaties, streepjes en punten negeren: "gr201" vindt "GR-201"
-    const norm = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-    const t = norm(q);
+    const t = normQ(q);
     if (!t) return [];
     const hits = [];
     Store.state.features.forEach(f => {
-      const ref = norm(f.props.ref), name = norm(f.props.name), cat = norm(f.props.category);
+      const pr = f.props || {};
+      const ref = normQ(pr.ref), name = normQ(pr.name);
       let score = 0;
       if (ref && ref === t) score = 100;
       else if (ref && ref.startsWith(t)) score = 80;
       else if (ref && ref.includes(t)) score = 60;
-      else if (name.startsWith(t)) score = 40;
-      else if (name.includes(t)) score = 30;
-      else if (cat === t) score = 10;
+      else if (name.startsWith(t)) score = 45;
+      else if (name.includes(t)) score = 35;
+      else if (normQ(pr.category).includes(t)) score = 20;
+      else if (normQ(pr.notes).includes(t)) score = 15;
+      else if (Object.values(pr).some(v => typeof v === 'string' && normQ(v).includes(t))) score = 10;
       if (score) hits.push({ f, score });
     });
-    return hits.sort((a, b) => b.score - a.score || String(a.f.props.ref || a.f.props.name).localeCompare(String(b.f.props.ref || b.f.props.name), 'nl', { numeric: true })).slice(0, 8).map(h => h.f);
+    return hits
+      .sort((a, b) => b.score - a.score || String(a.f.props.ref || a.f.props.name).localeCompare(String(b.f.props.ref || b.f.props.name), 'nl', { numeric: true }))
+      .slice(0, 10).map(h => h.f);
+  }
+
+  // Zoekterm markeren in een tekst (ook als je streepjes/spaties anders typt)
+  function highlight(text, q) {
+    const raw = String(text ?? '');
+    const t = normQ(q);
+    if (!t) return esc(raw);
+    let normed = '', map = [];
+    for (let i = 0; i < raw.length; i++) {
+      const c = normQ(raw[i]);
+      for (const ch of c) { normed += ch; map.push(i); }
+    }
+    const at = normed.indexOf(t);
+    if (at < 0) return esc(raw);
+    const from = map[at], to = map[at + t.length - 1] + 1;
+    return esc(raw.slice(0, from)) + '<mark>' + esc(raw.slice(from, to)) + '</mark>' + esc(raw.slice(to));
   }
 
   function objectResultsHtml(q) {
-    return searchObjects(q).map(f => {
+    const found = searchObjects(q);
+    if (!found.length) return '';
+    return '<li class="gc-head">Je objecten</li>' + found.map(f => {
       const proj = Store.project(f.projectId);
-      const label = f.props.ref ? `<span class="gc-ref mono">${esc(f.props.ref)}</span> ${esc(f.props.name || '')}` : esc(f.props.name || '(naamloos)');
-      const sub = [f.props.category, proj && proj.id !== Store.state.activeProjectId ? proj.name : ''].filter(Boolean).join(' · ');
-      return `<li data-fid="${esc(f.id)}" class="gc-obj"><span class="gc-icon" style="color:${esc(colorOf(f))}">${icon(SHAPE_ICON[shapeOf(f)])}</span><span class="gc-main"><span>${label}</span>${sub ? `<small>${esc(sub)}</small>` : ''}</span><span class="gc-type">object</span></li>`;
+      const label = f.props.ref
+        ? `<span class="gc-ref mono">${highlight(f.props.ref, q)}</span> ${highlight(f.props.name || '', q)}`
+        : highlight(f.props.name || '(naamloos)', q);
+      const sub = [f.props.category, f.props.status, proj && proj.id !== Store.state.activeProjectId ? `project ${proj.name}` : ''].filter(Boolean).join(' · ');
+      return `<li data-fid="${esc(f.id)}" class="gc-obj" role="option"><span class="gc-icon" style="color:${esc(colorOf(f))}">${icon(SHAPE_ICON[shapeOf(f)])}</span><span class="gc-main"><span>${label}</span>${sub ? `<small>${esc(sub)}</small>` : ''}</span></li>`;
     }).join('');
   }
+
+  const noneHtml = (q) => `<li class="gc-none"><strong>Niets gevonden voor “${esc(q)}”</strong><span>Er wordt gezocht in kenmerk, naam, categorie en notities van je objecten, en in adressen, postcodes en plaatsen.</span></li>`;
+  const PLACE_TYPE = { adres: 'Adres', postcode: 'Postcode', weg: 'Straat', woonplaats: 'Plaats', gemeente: 'Gemeente', provincie: 'Provincie', perceel: 'Perceel', buurt: 'Buurt', wijk: 'Wijk' };
 
   async function geocode(q) {
     gcCtrl?.abort();
     gcCtrl = new AbortController();
     const own = objectResultsHtml(q);
-    gcResults.innerHTML = own;
-    if (q.length < 3) { if (!own) gcResults.innerHTML = ''; return; }
+    if (q.length < 3) { gcResults.innerHTML = own || noneHtml(q); return; }
     const url = `https://api.pdok.nl/bzk/locatieserver/search/v3_1/free?rows=6&fl=weergavenaam,centroide_ll,type&q=${encodeURIComponent(q)}`;
     try {
       const res = await fetch(url, { signal: gcCtrl.signal });
       const data = await res.json();
       const docs = data.response?.docs || [];
-      const places = docs.map(d => `<li data-ll="${esc(d.centroide_ll)}" data-type="${esc(d.type)}"><span>${esc(d.weergavenaam)}</span><span class="gc-type">${esc(d.type)}</span></li>`).join('');
-      gcResults.innerHTML = own + places || '<li class="gc-none">Niets gevonden</li>';
+      const places = docs.length
+        ? '<li class="gc-head">Adressen en plaatsen</li>' + docs.map(d =>
+            `<li data-ll="${esc(d.centroide_ll)}" data-type="${esc(d.type)}" role="option"><span class="gc-place-icon">${icon('i-point')}</span><span class="gc-main"><span>${highlight(d.weergavenaam, q)}</span><small>${esc(PLACE_TYPE[d.type] || d.type)}</small></span></li>`).join('')
+        : '';
+      gcResults.innerHTML = (own + places) || noneHtml(q);
     } catch (e) {
-      if (e.name !== 'AbortError') gcResults.innerHTML = own || '<li class="gc-none">Zoeken niet beschikbaar</li>';
+      if (e.name !== 'AbortError') gcResults.innerHTML = own || noneHtml(q);
     }
   }
 
+  const gcClear = $('#gcClear');
+  function closeResults() { gcResults.innerHTML = ''; }
   gcInput.addEventListener('input', () => {
     clearTimeout(gcTimer);
     const q = gcInput.value.trim();
-    if (!q) { gcResults.innerHTML = ''; return; }
-    gcResults.innerHTML = objectResultsHtml(q);   // eigen objecten direct tonen
+    gcClear.hidden = !gcInput.value;
+    if (!q) { closeResults(); return; }
+    const own = objectResultsHtml(q);              // eigen objecten direct tonen
+    if (own) gcResults.innerHTML = own;
     gcTimer = setTimeout(() => geocode(q), 250);
+  });
+  gcInput.addEventListener('focus', () => { if (gcInput.value.trim()) geocode(gcInput.value.trim()); });
+  gcClear.addEventListener('click', () => {
+    gcInput.value = '';
+    gcClear.hidden = true;
+    closeResults();
+    gcInput.focus();
   });
   $('#geocoder').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1334,7 +1392,7 @@
     const obj = e.target.closest('li[data-fid]');
     if (obj) {
       const f = Store.feature(obj.dataset.fid);
-      gcResults.innerHTML = '';
+      closeResults();
       gcInput.blur();
       if (!f) return;
       stopPick(); stopDrawing(); stopEditing();
@@ -1357,7 +1415,7 @@
     gcResults.innerHTML = '';
     gcInput.blur();
   });
-  document.addEventListener('click', (e) => { if (!e.target.closest('#geocoder')) gcResults.innerHTML = ''; });
+  document.addEventListener('click', (e) => { if (!e.target.closest('#geocoder, #geocodeResults')) closeResults(); });
 
   // ---------------------------------------------------------------- Labels & zijbalk
   const LabelControl = L.Control.extend({

@@ -128,13 +128,12 @@
 
       <div class="map-top">
         <button id="openSidebar" class="map-btn" title="Menu" aria-label="Menu openen"><svg><use href="#i-menu"/></svg></button>
-        <form id="geocoder" autocomplete="off" role="search">
-          <div class="input-icon">
-            <svg><use href="#i-search"/></svg>
-            <input id="geocodeInput" type="search" placeholder="Zoek kenmerk, object of adres">
-          </div>
-          <ul id="geocodeResults"></ul>
+        <form id="geocoder" class="searchbar" autocomplete="off" role="search">
+          <svg class="sb-icon"><use href="#i-search"/></svg>
+          <input id="geocodeInput" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Zoek kenmerk, object of adres" aria-label="Zoeken">
+          <button type="button" id="gcClear" class="gc-clear" hidden aria-label="Zoekterm wissen"><svg><use href="#i-x"/></svg></button>
         </form>
+        <ul id="geocodeResults" class="gc-results" role="listbox"></ul>
       </div>
 
       <div id="drawHint" class="draw-hint" hidden>
@@ -234,6 +233,7 @@
             <button type="button" id="editShape" class="btn"><svg><use href="#i-vertex"/></svg>Vorm</button>
             <button type="button" id="deleteFeature" class="btn danger"><svg><use href="#i-trash"/></svg>Verwijder</button>
           </div>
+          <p id="saveState" class="save-state">Wijzigingen worden automatisch bewaard</p>
         </div>
       </form>
     </aside>
