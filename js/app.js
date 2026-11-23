@@ -386,43 +386,73 @@
       });
     }
 
-    // Overzicht van alle vakken (bij een projectlink)
-    function showAll(zoom) {
+    // Bundels (groepen) in de link: als eigen regel tonen, behalve als de hele link één bundel is
+    const groupNames = [...new Set(feats.map(f => f.props.group).filter(Boolean))];
+    const useGroups = groupNames.length > 0 && !(groupNames.length === 1 && feats.every(f => f.props.group === groupNames[0]));
+    let openGroup = null;
+    const totalOf = (list) => list.reduce((t, f) => { const m = measure(f); return { area: t.area + (m.area || 0), length: t.length + (m.length || 0) }; }, { area: 0, length: 0 });
+    const countText = (n) => `${n} ${n === 1 ? 'vak' : 'vakken'}`;
+    const featLi = (f) => {
+      const c = f.props.color || '#0a6c8f';
+      const m = measureText(f, true);
+      return `<li data-i="${feats.indexOf(f)}"><span class="vc-dot" style="color:${esc(c)};background:${esc(c)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span><span class="vc-li-main"><span>${f.props.ref ? `<span class="mono vc-ref">${esc(f.props.ref)}</span> ` : ''}${esc(f.props.name || SHAPE_LABEL[shapeOf(f)])}</span>${f.props.category ? `<small>${esc(f.props.category)}</small>` : ''}</span><span class="mono vc-li-m">${esc(m)}</span></li>`;
+    };
+    const groupLi = (name) => {
+      const list = feats.filter(f => f.props.group === name);
+      const colors = [...new Set(list.map(f => f.props.color || '#0a6c8f'))].slice(0, 4);
+      const a = totalOf(list).area;
+      return `<li data-g="${esc(name)}" class="vc-group"><span class="vc-dot vc-gdot">${colors.map(c => `<i style="background:${esc(c)}"></i>`).join('')}</span><span class="vc-li-main"><span>${esc(name)}</span><small>${countText(list.length)}</small></span><span class="mono vc-li-m">${a ? esc(areaParts(a).join(' ')) : ''}</span><svg class="vc-chev"><use href="#i-chevron"/></svg></li>`;
+    };
+
+    // Overzicht van alle vakken (bij een project- of groepslink), of van één bundel
+    function showAll(zoom, group = null) {
       current = null;
+      openGroup = group;
       highlight(null);
-      const total = feats.reduce((t, f) => { const m = measure(f); return { area: t.area + (m.area || 0), length: t.length + (m.length || 0) }; }, { area: 0, length: 0 });
+      const list = group ? feats.filter(f => f.props.group === group) : feats;
+      const total = totalOf(list);
+      let items;
+      if (!group && useGroups) {
+        const seen = new Set();
+        items = feats.map(f => {
+          if (!f.props.group) return featLi(f);
+          if (seen.has(f.props.group)) return '';
+          seen.add(f.props.group);
+          return groupLi(f.props.group);
+        }).join('');
+      } else items = list.map(featLi).join('');
       card.innerHTML = `
+        ${group ? `<button type="button" class="vc-back" data-vc="all"><svg><use href="#i-chevron"/></svg>${esc(projectTitle || 'Alle vakken')}</button>` : ''}
         <div class="vc-head">
           <span class="vc-icon">${icon('i-layers')}</span>
           <div class="vc-titles">
-            <span class="vc-name">${esc(projectTitle)}</span>
-            <span class="vc-meta">${feats.length} ${feats.length === 1 ? 'vak' : 'vakken'} · tik op een vak voor details</span>
+            <span class="vc-name">${esc(group || projectTitle)}</span>
+            <span class="vc-meta">${countText(list.length)} · tik op een vak voor details</span>
           </div>
         </div>
         ${measureTiles({ area: total.area, length: total.length })}
-        <ul class="vc-list">${feats.map((f, i) => {
-          const c = f.props.color || '#0a6c8f';
-          const m = measureText(f, true);
-          return `<li data-i="${i}"><span class="vc-dot" style="color:${esc(c)};background:${esc(c)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span><span class="vc-li-main"><span>${f.props.ref ? `<span class="mono vc-ref">${esc(f.props.ref)}</span> ` : ''}${esc(f.props.name || SHAPE_LABEL[shapeOf(f)])}</span>${f.props.category ? `<small>${esc(f.props.category)}</small>` : ''}</span><span class="mono vc-li-m">${esc(m)}</span></li>`;
-        }).join('')}</ul>
+        <ul class="vc-list">${items}</ul>
         <div class="vc-actions">
-          <button type="button" class="btn" data-vc="fit"><svg><use href="#i-target"/></svg>Toon alles</button>
+          <button type="button" class="btn" data-vc="fit"><svg><use href="#i-target"/></svg>${group ? 'Toon groep' : 'Toon alles'}</button>
           ${locateBtn}
         </div>
         ${foot}`;
       sync();
-      if (zoom) fitTo(shared.getBounds());
+      if (zoom) fitTo(group ? boundsOf(list) : shared.getBounds());
     }
 
     // Eén vak in detail
     function show(f, zoom) {
       current = f;
+      if (useGroups && f.props.group) openGroup = f.props.group;
       highlight(multi ? f : null);
       const color = f.props.color || '#0a6c8f';
       let c = null;
       try { c = turf.centroid(f.geometry).geometry.coordinates; } catch (e) { /* */ }
       card.innerHTML = `
-        ${multi ? `<button type="button" class="vc-back" data-vc="all"><svg><use href="#i-chevron"/></svg>Alle vakken (${feats.length})</button>` : ''}
+        ${multi ? (openGroup && f.props.group === openGroup
+          ? `<button type="button" class="vc-back" data-vc="group"><svg><use href="#i-chevron"/></svg>${esc(openGroup)} (${feats.filter(x => x.props.group === openGroup).length})</button>`
+          : `<button type="button" class="vc-back" data-vc="all"><svg><use href="#i-chevron"/></svg>Alle vakken (${feats.length})</button>`) : ''}
         <div class="vc-head">
           <span class="vc-icon" style="color:${esc(color)};background:${esc(color)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
           <div class="vc-titles">
@@ -448,12 +478,15 @@
     card.addEventListener('click', (e) => {
       const li = e.target.closest('.vc-list li[data-i]');
       if (li) { show(feats[+li.dataset.i], true); return; }
+      const gli = e.target.closest('.vc-list li[data-g]');
+      if (gli) { showAll(true, gli.dataset.g); return; }
       const act = e.target.closest('[data-vc]')?.dataset.vc;
       if (act === 'all') showAll(true);
-      if (act === 'fit') fitTo(current ? boundsOf([current]) : shared.getBounds());
+      if (act === 'group') showAll(true, openGroup);
+      if (act === 'fit') fitTo(current ? boundsOf([current]) : openGroup ? boundsOf(feats.filter(f => f.props.group === openGroup)) : shared.getBounds());
       if (act === 'locate') locate();
     });
-    map.on('click', () => { if (multi && current) showAll(false); });
+    map.on('click', () => { if (multi && current) showAll(false, current.props.group === openGroup ? openGroup : null); });
 
     function locate() {
       if (!('geolocation' in navigator)) return;
@@ -1287,6 +1320,7 @@
         </span>
         <span class="f-measure">${area ? esc(areaParts(area).slice(0, 2).join(' ')) : ''}</span>
         <span class="g-actions">
+          <button type="button" class="icon-btn g-share" title="Groep delen: kijklink met alle vakken van deze groep" aria-label="Groep delen">${icon('i-share')}</button>
           <button type="button" class="icon-btn g-edit" title="Alle vakken in één keer bewerken" aria-label="Groep bewerken">${icon('i-edit')}</button>
           <button type="button" class="icon-btn danger g-del" title="Alle vakken van deze groep verwijderen" aria-label="Groep verwijderen">${icon('i-trash')}</button>
         </span>
@@ -1311,6 +1345,7 @@
     const grow = e.target.closest('li.group-row');
     if (grow) {
       const gid = grow.dataset.group;
+      if (e.target.closest('.g-share')) { const m = groupMembers(gid); const nm = m[0]?.props.group || 'Groep'; openShare(m, nm, `groep “${nm}”`); return; }
       if (e.target.closest('.g-edit')) { openGroupEdit(gid); return; }
       if (e.target.closest('.g-del')) { deleteGroup(gid); return; }
       if (e.target.closest('.g-toggle')) {

@@ -136,6 +136,7 @@
     if (p.name) o.n = level >= 2 && p.name.length > 32 ? p.name.slice(0, 31) + '…' : p.name;
     if (level >= 1) {   // ingekort: alleen naam, kenmerk, kleur, opvulling, vorm
       if (f.shape && f.shape !== 'Polygon') o.sh = f.shape;
+      if (p.group) o.g = p.group;
       if (p.ref) o.r = p.ref;
       if (p.color) o.col = p.color.replace('#', '');
       if (p.fill && p.fill !== 'effen') o.fill = p.fill;
@@ -143,6 +144,7 @@
       return o;
     }
     if (f.shape && f.shape !== 'Polygon') o.sh = f.shape;
+    if (p.group) o.g = p.group;
     if (p.ref) o.r = p.ref;
     if (p.category) o.c = p.category;
     if (p.status) o.s = p.status;
@@ -161,6 +163,7 @@
       ...(o.rad ? { radius: o.rad } : {}),
       props: {
         name: o.n || '', ref: o.r || '', category: o.c || '', status: o.s || '',
+        ...(o.g ? { group: o.g, groupId: 'g:' + o.g } : {}),
         kind: o.k || 'gebied', color: o.col ? (o.col.startsWith('#') ? o.col : '#' + o.col) : '#0a6c8f', fill: o.fill || 'effen', notes: '',
       },
     };
@@ -366,6 +369,7 @@
       ...(o.rad ? { radius: o.rad } : {}),
       props: {
         name: o.n || '', ref: o.r || '', category: o.c || '', status: o.s || '',
+        ...(o.g ? { group: o.g, groupId: 'g:' + o.g } : {}),
         kind: o.k || 'gebied', color: o.col || '#0a6c8f', fill: o.fill || 'effen', notes: '',
       },
     }));
