@@ -627,6 +627,14 @@ body.planning .leaflet-top.leaflet-left { left: calc(min(460px, 46%) + 12px); }
 .plan-drop.busy { opacity: .6; pointer-events: none; }
 .plan-drop svg { width: 30px; height: 30px; color: var(--accent); }
 .plan-drop strong { color: var(--text); font-size: 15px; }
+.plan-auto:empty { display: none; }
+.plan-auto-busy { display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 600; }
+.plan-spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: spin .8s linear infinite; flex: none; }
+.plan-auto-result { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 10px; font-size: 13px; border-left: 4px solid var(--st-gereed); background: var(--surface-2); }
+.plan-auto-result.warn { border-left-color: var(--st-uitvoering); }
+.plan-auto-result strong { font-size: 14px; }
+.plan-auto-result span { color: var(--text); }
+.plan-auto-result em { color: var(--muted); font-style: normal; }
 .plan-hint, .plan-instr { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
 .plan-instr strong { color: var(--text); }
 .plan-error { margin: 0; color: var(--danger); font-size: 13px; }
