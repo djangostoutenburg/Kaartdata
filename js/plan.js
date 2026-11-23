@@ -369,13 +369,39 @@
   }
 
   async function findStreets(texts, progress) {
-    // Kandidaten: losse teksten met letters, zonder datum/codes; grootste letters eerst
+    // Kandidaten: elke tekst (ook kleine, bijv. het adres in het titelblok) én de straatnaam binnen een
+    // langere regel ("Locatie: Drusiushof 1 t/m 5, 1069 Amsterdam" → "Drusiushof").
+    const SUFFIX = /(straat|weg|laan|plein|hof|kade|gracht|pad|dijk|singel|park|plantsoen|dreef|steeg|markt|baan|ring|boulevard|kanaal|plas|erf|veld|oord|haven|brug|sloot|wal|burgwal|dwarsstraat|polder|tuin|park|zijde|lei|dam|pier|bolwerk|bosch|bos|hoek|gaarde|hof)\b/i;
+    const pieces = (str) => {
+      const out = new Set();
+      const s0 = str.replace(/^(locatie|adres|project(?:locatie)?|plaats|werk|object|straat)\s*[:\-–]\s*/i, '');
+      out.add(s0);
+      s0.split(/[,;|()\/]| - | – /).forEach(part => {
+        let p = part.trim()
+          .replace(/\b\d{4}\s?[a-z]{2}\b.*$/i, '')                         // postcode en daarna (plaats)
+          .replace(/\s+(t\/m|tot en met|nr\.?|no\.?)?\s*\d+[a-z]?(\s*(-|t\/m|tot)\s*\d+[a-z]?)?\s*$/i, '')   // huisnummer(s)
+          .replace(/\s+(amsterdam|amsterdam[- ]\w+)$/i, '')
+          .trim();
+        if (p.length >= 4) out.add(p);
+        // straatnaam ergens in een zin: woorden tot en met het woord met een straat-uitgang
+        const words = p.split(/\s+/);
+        words.forEach((w, i) => {
+          if (!SUFFIX.test(w)) return;
+          for (let k = Math.max(0, i - 3); k <= i; k++) out.add(words.slice(k, i + 1).join(' '));
+        });
+      });
+      return [...out].filter(x => /[a-z]{3}/i.test(x) && x.length <= 50 && !/\d{2,}[-/.]\d/.test(x));
+    };
     const seen = new Set();
-    const cands = texts
-      .filter(t => /[a-z]{3}/i.test(t.str) && t.str.length <= 50 && !/\d{2,}[-/.]\d/.test(t.str))
-      .sort((a, b) => b.h - a.h)
-      .filter(t => { const k = norm(t.str); if (!k || seen.has(k)) return false; seen.add(k); return true; })
-      .slice(0, 70);
+    const scoreOf = (t, piece) => (SUFFIX.test(piece) ? 1000 : 0) + (/\d/.test(t.str) ? 300 : 0) + (/^(locatie|adres|project)/i.test(t.str) ? 500 : 0) + t.h;
+    const all = [];
+    texts.forEach(t => pieces(t.str).forEach(piece => {
+      const k = norm(piece).replace(/ /g, '');
+      if (!k || seen.has(k)) return;
+      seen.add(k);
+      all.push({ t, piece, score: scoreOf(t, piece) });
+    }));
+    const cands = all.sort((a, b) => b.score - a.score).slice(0, 110);
     const words = new Set(texts.flatMap(t => norm(t.str).split(' ')));
     const allText = ' ' + texts.map(t => norm(t.str)).join(' ') + ' ';
     const matches = [];
@@ -383,11 +409,11 @@
     let done = 0;
     // Vergelijken zonder spaties/leestekens: "Adrianus van W aertweg" = "Adrianus van Waertweg"
     const compact = (t) => norm(t).replace(/ /g, '');
-    const one = async (t) => {
-      const q = compact(t.str);
+    const one = async ({ t, piece }) => {
+      const q = compact(piece);
       // zoeken op de hele tekst én op het langste woord (vangt verkeerde spaties op)
-      const longest = t.str.split(/[\s.]+/).sort((a, b) => b.length - a.length)[0] || t.str;
-      const queries = [...new Set([t.str, longest.length >= 5 ? longest : null].filter(Boolean))];
+      const longest = piece.split(/[\s.]+/).sort((a, b) => b.length - a.length)[0] || piece;
+      const queries = [...new Set([piece, longest.length >= 5 ? longest : null].filter(Boolean))];
       try {
         const docs = (await Promise.all(queries.map(async (qs) => {
           const url = `${LS}?rows=20&fq=type:weg&fq=gemeentenaam:${encodeURIComponent(GEMEENTE)}&fl=straatnaam,woonplaatsnaam,gemeentenaam,centroide_ll&q=${encodeURIComponent(qs)}`;
@@ -404,7 +430,7 @@
       } catch (e) { /* overslaan */ }
       progress(`Straatnamen zoeken (${++done}/${cands.length})`);
     };
-    for (let i = 0; i < cands.length; i += 6) await Promise.all(cands.slice(i, i + 6).map(one));
+    for (let i = 0; i < cands.length; i += 8) await Promise.all(cands.slice(i, i + 8).map(one));
     if (!matches.length) return null;
     // ook herhalingen van dezelfde straatnaam elders op het blad (bijv. groot in de tekening én klein in het kaartje)
     texts.forEach(t => {
@@ -688,7 +714,7 @@
     // adres van het bureau: straatnaam met postcode/postbus/bureaunaam vlak in de buurt
     const isOfficeAddress = (t) => texts.some(o => o !== t && Math.hypot(o.x - t.x, o.y - t.y) < Math.max(t.h, 4) * 8 &&
       /postbus|\b\d{4}\s?[a-z]{2}\b|ingenieursbureau|gemeente amsterdam|www\.|@/i.test(o.str));
-    const sheetLabels = loc.labelTexts.filter(t => !inInset(t.x, t.y) && !(inTitle(t) && /\d/.test(t.str)) && !isOfficeAddress(t));
+    const sheetLabels = loc.labelTexts.filter(t => !inInset(t.x, t.y) && !isOfficeAddress(t));
     let locSource = 'straatnamen';
     if (sheetLabels.length) {
       const pts = [...new Map(sheetLabels.map(t => [t.streetName, t.streetLL])).values()];
@@ -708,212 +734,233 @@
     loc.labelTexts = drawLabels;     // richting alleen uit straatnamen in de tekening zelf (niet uit het kaartje)
     loc.source = locSource;
     loc.insets = insets;
-    const halfDiag = Math.hypot(W, H) / 2 * mppOf(Math.max(...tryScales));
-    const R = Math.min(550, Math.round(halfDiag * 0.7 + 200));
-    const target = await fetchTarget(loc.center, R, progress);
-    if (target.rings.length < 20) throw new Error('Te weinig BGT-ondergrond gevonden rond ' + loc.streets[0] + '.');
-    // Kaartje nauwkeuriger georefereren met de BGT-straatlabels → startpunt binnen enkele tientallen meters
-    let prior = null;
-    if (locSource === 'situatiekaartje' && insetRough) {
-      let g = insetRough;
-      global.__insetDbg = { rough: insetRough.marker, hasMarker: insetRough.hasMarker, inset: insets[0], insetTexts: loc.allLabels.filter(t => inB(insets[0], t.x, t.y)).map(t => [t.str, Math.round(t.x), Math.round(t.y)]), nLabels: target.labels.length, steps: [] };
-      for (let it = 0; it < 3; it++) { g = insetGeoref(insets[0], loc.allLabels, lines, target.labels, g) || g; global.__insetDbg.steps.push(g.marker); }
-      const kx0 = 111320 * Math.cos(loc.center[0] * Math.PI / 180);
-      prior = [(g.marker[1] - loc.center[1]) * kx0, (g.marker[0] - loc.center[0]) * 110540];   // meters t.o.v. het opgehaalde midden
-      loc.insetRot = g.rot;
+    // Startpunten: eerst het berekende midden; past het plan daar niet goed, dan elke straat uit de tekening
+    // zelf (en daarna van het blad) apart proberen — een lange straat of groot park ligt soms ver van het plan.
+    const startPoints = [loc.center];
+    const addStart = (ll) => { if (ll && !startPoints.some(c => Math.hypot((c[0] - ll[0]) * 111, (c[1] - ll[1]) * 68) < 0.15)) startPoints.push(ll); };
+    if (loc.source !== 'situatiekaartje') {
+      drawLabels.forEach(t => addStart(t.streetLL));
+      sheetLabels.forEach(t => addStart(t.streetLL));
     }
-    progress('Ondergrond voorbereiden');
-    await tick();
-    const field = directionalFields(target.rings, R);
-    const tSegs = [];
-    target.rings.forEach(r => { for (let k = 1; k < r.length; k++) tSegs.push([r[k - 1][0], r[k - 1][1], r[k][0], r[k][1]]); });
-    const tDom = dominantAngle(tSegs);
-
-    // Ondergrond-lijnen van de tekening, in pixels rond het midden (y omhoog), met richting.
-    // Zwart/grijs, binnen het tekengebied; geen kaders, kleine ronde symbolen (bomen) of tekstkrabbels.
-    const refM = mppOf(400);                               // alleen voor drempels in meters
-    const upts = [], usegs = [];
-    lines.forEach(l => {
-      if (saturation(l.color) > 0.3 || lightness(l.color) > 0.85) return;
-      const bb = bboxOf(l.pts);
-      const diag = Math.hypot(bb[2] - bb[0], bb[3] - bb[1]) * refM;
-      if (diag < 1) return;
-      if (l.curve && l.closed && diag < 10) return;
-      if (l.rect && (bb[2] - bb[0] > (drawArea[2] - drawArea[0]) * 0.9 || bb[3] - bb[1] > (drawArea[3] - drawArea[1]) * 0.9)) return;
-      const P = l.pts;
-      for (let k = 1; k < P.length; k++) {
-        if (!inB(drawArea, P[k - 1][0], P[k - 1][1]) || !inB(drawArea, P[k][0], P[k][1])) continue;
-        const x0 = P[k - 1][0] - W / 2, y0 = -(P[k - 1][1] - H / 2), x1 = P[k][0] - W / 2, y1 = -(P[k][1] - H / 2);
-        const len = Math.hypot(x1 - x0, y1 - y0);
-        if (len * refM < 0.3) continue;
-        usegs.push([x0, y0, x1, y1]);
-        const ang = Math.atan2(y1 - y0, x1 - x0) * 180 / Math.PI;
-        const n = Math.max(1, Math.floor(len * refM));
-        for (let s5 = 0; s5 < n; s5++) upts.push([x0 + (x1 - x0) * s5 / n, y0 + (y1 - y0) * s5 / n, ang]);
+    async function attemptAt() {
+      const halfDiag = Math.hypot(W, H) / 2 * mppOf(Math.max(...tryScales));
+      const R = Math.min(550, Math.round(halfDiag * 0.7 + 200));
+      const target = await fetchTarget(loc.center, R, progress);
+      if (target.rings.length < 20) throw new Error('Te weinig BGT-ondergrond gevonden rond ' + loc.streets[0] + '.');
+      // Kaartje nauwkeuriger georefereren met de BGT-straatlabels → startpunt binnen enkele tientallen meters
+      let prior = null;
+      if (locSource === 'situatiekaartje' && insetRough) {
+        let g = insetRough;
+        global.__insetDbg = { rough: insetRough.marker, hasMarker: insetRough.hasMarker, inset: insets[0], insetTexts: loc.allLabels.filter(t => inB(insets[0], t.x, t.y)).map(t => [t.str, Math.round(t.x), Math.round(t.y)]), nLabels: target.labels.length, steps: [] };
+        for (let it = 0; it < 3; it++) { g = insetGeoref(insets[0], loc.allLabels, lines, target.labels, g) || g; global.__insetDbg.steps.push(g.marker); }
+        const kx0 = 111320 * Math.cos(loc.center[0] * Math.PI / 180);
+        prior = [(g.marker[1] - loc.center[1]) * kx0, (g.marker[0] - loc.center[0]) * 110540];   // meters t.o.v. het opgehaalde midden
+        loc.insetRot = g.rot;
       }
-    });
-    if (upts.length < 50) throw new Error('Er staat te weinig ondergrond in de tekening om hem automatisch te plaatsen.');
-    const pick = (n) => { const out = []; const step = upts.length / n; for (let i = 0; i < n && i * step < upts.length; i++) out.push(upts[Math.floor(i * step)]); return out; };
-    const coarse = pick(200), fine = pick(1500);
+      progress('Ondergrond voorbereiden');
+      await tick();
+      const field = directionalFields(target.rings, R);
+      const tSegs = [];
+      target.rings.forEach(r => { for (let k = 1; k < r.length; k++) tSegs.push([r[k - 1][0], r[k - 1][1], r[k][0], r[k][1]]); });
+      const tDom = dominantAngle(tSegs);
 
-    // Draaiing: hoofdrichtingen (rooster van de wijk) en, als die er zijn, de richting van de straatnamen
-    const labelRots = [];
-    loc.labelTexts.forEach(t => {
-      const pdfAng = -t.ang * 180 / Math.PI;
-      target.labels.filter(l => norm(l.name).replace(/ /g, '') === norm(t.streetName).replace(/ /g, '')).forEach(l => {
-        const r = (((l.hoek % 360) - pdfAng) % 180 + 180) % 180;
-        labelRots.push(r, r + 180);
+      // Ondergrond-lijnen van de tekening, in pixels rond het midden (y omhoog), met richting.
+      // Zwart/grijs, binnen het tekengebied; geen kaders, kleine ronde symbolen (bomen) of tekstkrabbels.
+      const refM = mppOf(400);                               // alleen voor drempels in meters
+      const upts = [], usegs = [];
+      lines.forEach(l => {
+        if (saturation(l.color) > 0.3 || lightness(l.color) > 0.85) return;
+        const bb = bboxOf(l.pts);
+        const diag = Math.hypot(bb[2] - bb[0], bb[3] - bb[1]) * refM;
+        if (diag < 1) return;
+        if (l.curve && l.closed && diag < 10) return;
+        if (l.rect && (bb[2] - bb[0] > (drawArea[2] - drawArea[0]) * 0.9 || bb[3] - bb[1] > (drawArea[3] - drawArea[1]) * 0.9)) return;
+        const P = l.pts;
+        for (let k = 1; k < P.length; k++) {
+          if (!inB(drawArea, P[k - 1][0], P[k - 1][1]) || !inB(drawArea, P[k][0], P[k][1])) continue;
+          const x0 = P[k - 1][0] - W / 2, y0 = -(P[k - 1][1] - H / 2), x1 = P[k][0] - W / 2, y1 = -(P[k][1] - H / 2);
+          const len = Math.hypot(x1 - x0, y1 - y0);
+          if (len * refM < 0.3) continue;
+          usegs.push([x0, y0, x1, y1]);
+          const ang = Math.atan2(y1 - y0, x1 - x0) * 180 / Math.PI;
+          const n = Math.max(1, Math.floor(len * refM));
+          for (let s5 = 0; s5 < n; s5++) upts.push([x0 + (x1 - x0) * s5 / n, y0 + (y1 - y0) * s5 / n, ang]);
+        }
       });
-    });
-    const sDom = dominantAngle(usegs);
-    const angDiff = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180);
-    let rots = [];
-    for (let k = 0; k < 4; k++) for (const f of [-1, 0, 1]) rots.push(tDom - sDom + k * 90 + f);
-    if (labelRots.length) {
-      // richtingen waar de meeste straatnamen het over eens zijn (per 180°), de beste twee
-      const base = labelRots.filter((_, i) => i % 2 === 0);
-      const clusters = [];
-      base.forEach(r => {
-        const c = clusters.find(q => Math.abs(((q.r - r) % 180 + 270) % 180 - 90) < 6);
-        if (c) { c.n++; c.sum += r; } else clusters.push({ r, n: 1, sum: r });
+      if (upts.length < 50) throw new Error('Er staat te weinig ondergrond in de tekening om hem automatisch te plaatsen.');
+      const pick = (n) => { const out = []; const step = upts.length / n; for (let i = 0; i < n && i * step < upts.length; i++) out.push(upts[Math.floor(i * step)]); return out; };
+      const coarse = pick(200), fine = pick(1500);
+
+      // Draaiing: hoofdrichtingen (rooster van de wijk) en, als die er zijn, de richting van de straatnamen
+      const labelRots = [];
+      loc.labelTexts.forEach(t => {
+        const pdfAng = -t.ang * 180 / Math.PI;
+        target.labels.filter(l => norm(l.name).replace(/ /g, '') === norm(t.streetName).replace(/ /g, '')).forEach(l => {
+          const r = (((l.hoek % 360) - pdfAng) % 180 + 180) % 180;
+          labelRots.push(r, r + 180);
+        });
       });
-      clusters.sort((a, b) => b.n - a.n);
-      const top = clusters.slice(0, 2).map(c => c.sum / c.n);
-      // roosterrichting gebruiken als die dichtbij een straatnaam-richting ligt (nauwkeuriger)
-      const grid = rots.filter(r => top.some(t => angDiff(r, t) < 8 || angDiff(r, t + 180) < 8));
-      rots = grid.length ? grid : top.flatMap(t => [t, t + 180]).flatMap(r => [r - 2, r, r + 2]);
-    }
-    if (global.__planForce?.rots) rots = global.__planForce.rots;
-    const dbg = (global.__planDebug = { prior, insetRot: loc.insetRot, streets: loc.streets, labels: loc.labelTexts.map(t => [t.str, t.streetName]), center: loc.center, source: loc.source, insets, drawArea, nPts: upts.length, labelRots, tDom, sDom, rots: rots.map(r => Math.round(r)), scales: tryScales });
+      const sDom = dominantAngle(usegs);
+      const angDiff = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180);
+      let rots = [];
+      for (let k = 0; k < 4; k++) for (const f of [-1, 0, 1]) rots.push(tDom - sDom + k * 90 + f);
+      if (labelRots.length) {
+        // richtingen waar de meeste straatnamen het over eens zijn (per 180°), de beste twee
+        const base = labelRots.filter((_, i) => i % 2 === 0);
+        const clusters = [];
+        base.forEach(r => {
+          const c = clusters.find(q => Math.abs(((q.r - r) % 180 + 270) % 180 - 90) < 6);
+          if (c) { c.n++; c.sum += r; } else clusters.push({ r, n: 1, sum: r });
+        });
+        clusters.sort((a, b) => b.n - a.n);
+        const top = clusters.slice(0, 2).map(c => c.sum / c.n);
+        // roosterrichting gebruiken als die dichtbij een straatnaam-richting ligt (nauwkeuriger)
+        const grid = rots.filter(r => top.some(t => angDiff(r, t) < 8 || angDiff(r, t + 180) < 8));
+        rots = grid.length ? grid : top.flatMap(t => [t, t + 180]).flatMap(r => [r - 2, r, r + 2]);
+      }
+      if (global.__planForce?.rots) rots = global.__planForce.rots;
+      const dbg = (global.__planDebug = { prior, insetRot: loc.insetRot, streets: loc.streets, labels: loc.labelTexts.map(t => [t.str, t.streetName]), center: loc.center, source: loc.source, insets, drawArea, nPts: upts.length, labelRots, tDom, sDom, rots: rots.map(r => Math.round(r)), scales: tryScales });
 
-    // Grof zoeken over schaal × draaiing × positie met de richtings-afstandskaarten
-    const { fields, size, off } = field;
-    const n = coarse.length;
-    const rx = new Float64Array(n), ry = new Float64Array(n), rb = new Uint8Array(n);
-    const span = prior ? 150 : Math.max(40, Math.min(R * 0.8, 300));
-    const [ox, oy] = prior || [0, 0];
-    const TOL = 4, STEP = 4;
-    let cands = [], floor = 0.15, combo = 0;
-    for (const scaleN of tryScales) {
-      const m = mppOf(scaleN);
-      for (const rot of rots) {
-        if (combo++ % 6 === 0) { progress(`Tekening op de ondergrond passen (${Math.round(combo / (tryScales.length * rots.length) * 100)}%)`); await tick(); }
-        const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
-        for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
-        for (let ty = oy - span; ty <= oy + span; ty += STEP) for (let tx = ox - span; tx <= ox + span; tx += STEP) {
-          let sc = 0;
-          for (let k = 0; k < n; k++) {
-            const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
-            if (i >= 0 && j >= 0 && i < size && j < size) { const dd = fields[rb[k]][j * size + i]; if (dd < TOL) sc += 1 - dd / TOL; }
-            if (k === 40 && sc < floor * 41 * 0.6) break;     // kansloos: vroeg stoppen
+      // Grof zoeken over schaal × draaiing × positie met de richtings-afstandskaarten
+      const { fields, size, off } = field;
+      const n = coarse.length;
+      const rx = new Float64Array(n), ry = new Float64Array(n), rb = new Uint8Array(n);
+      const span = prior ? 150 : Math.max(40, Math.min(R * 0.8, 300));
+      const [ox, oy] = prior || [0, 0];
+      const TOL = 4, STEP = 4;
+      let cands = [], floor = 0.15, combo = 0;
+      for (const scaleN of tryScales) {
+        const m = mppOf(scaleN);
+        for (const rot of rots) {
+          if (combo++ % 6 === 0) { progress(`Tekening op de ondergrond passen (${Math.round(combo / (tryScales.length * rots.length) * 100)}%)`); await tick(); }
+          const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
+          for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
+          for (let ty = oy - span; ty <= oy + span; ty += STEP) for (let tx = ox - span; tx <= ox + span; tx += STEP) {
+            let sc = 0;
+            for (let k = 0; k < n; k++) {
+              const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
+              if (i >= 0 && j >= 0 && i < size && j < size) { const dd = fields[rb[k]][j * size + i]; if (dd < TOL) sc += 1 - dd / TOL; }
+              if (k === 40 && sc < floor * 41 * 0.6) break;     // kansloos: vroeg stoppen
+            }
+            sc /= n;
+            if (sc > floor) { cands.push({ rot, tx, ty, m, scaleN, sc }); if (cands.length > 400) { cands.sort((a, b) => b.sc - a.sc); cands.length = 30; floor = Math.max(floor, cands[29].sc); } }
           }
-          sc /= n;
-          if (sc > floor) { cands.push({ rot, tx, ty, m, scaleN, sc }); if (cands.length > 400) { cands.sort((a, b) => b.sc - a.sc); cands.length = 30; floor = Math.max(floor, cands[29].sc); } }
         }
       }
-    }
-    cands.sort((a, b) => b.sc - a.sc);
-    dbg.cands = cands.slice(0, 8).map(c => [Math.round(c.rot), c.scaleN, Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
+      cands.sort((a, b) => b.sc - a.sc);
+      dbg.cands = cands.slice(0, 8).map(c => [Math.round(c.rot), c.scaleN, Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
 
-    // Tweede, fijnere zoekronde rond de beste kandidaten: schaal ±12% (2%), draaiing ±2° (0,5°), positie ±12 m (1,5 m)
-    progress('Passing nauwkeuriger zoeken');
-    await tick();
-    const fineCands = [];
-    const seen0 = [];
-    for (const c0 of cands) {
-      if (seen0.some(q => Math.abs(q.rot - c0.rot) < 3 && Math.abs(q.m / c0.m - 1) < 0.1 && Math.hypot(q.tx - c0.tx, q.ty - c0.ty) < 15)) continue;
-      seen0.push(c0);
-      if (seen0.length > 5) break;
-      let bestL = { ...c0, sc: 0 };
-      for (let ds = -0.12; ds <= 0.1201; ds += 0.02) for (let dr = -2; dr <= 2.01; dr += 0.5) {
-        const m = c0.m * (1 + ds), rot = c0.rot + dr;
-        const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
-        for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
-        for (let ty = c0.ty - 12; ty <= c0.ty + 12; ty += 1.5) for (let tx = c0.tx - 12; tx <= c0.tx + 12; tx += 1.5) {
-          let sc = 0;
-          for (let k = 0; k < n; k++) {
-            const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
-            if (i >= 0 && j >= 0 && i < size && j < size) { const dd = fields[rb[k]][j * size + i]; if (dd < 2) sc += 1 - dd / 2; }
+      // Tweede, fijnere zoekronde rond de beste kandidaten: schaal ±12% (2%), draaiing ±2° (0,5°), positie ±12 m (1,5 m)
+      progress('Passing nauwkeuriger zoeken');
+      await tick();
+      const fineCands = [];
+      const seen0 = [];
+      for (const c0 of cands) {
+        if (seen0.some(q => Math.abs(q.rot - c0.rot) < 3 && Math.abs(q.m / c0.m - 1) < 0.1 && Math.hypot(q.tx - c0.tx, q.ty - c0.ty) < 15)) continue;
+        seen0.push(c0);
+        if (seen0.length > 5) break;
+        let bestL = { ...c0, sc: 0 };
+        for (let ds = -0.12; ds <= 0.1201; ds += 0.02) for (let dr = -2; dr <= 2.01; dr += 0.5) {
+          const m = c0.m * (1 + ds), rot = c0.rot + dr;
+          const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
+          for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
+          for (let ty = c0.ty - 12; ty <= c0.ty + 12; ty += 1.5) for (let tx = c0.tx - 12; tx <= c0.tx + 12; tx += 1.5) {
+            let sc = 0;
+            for (let k = 0; k < n; k++) {
+              const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
+              if (i >= 0 && j >= 0 && i < size && j < size) { const dd = fields[rb[k]][j * size + i]; if (dd < 2) sc += 1 - dd / 2; }
+            }
+            sc /= n;
+            if (sc > bestL.sc) bestL = { rot, tx, ty, m, sc };
           }
-          sc /= n;
-          if (sc > bestL.sc) bestL = { rot, tx, ty, m, sc };
         }
+        fineCands.push(bestL);
       }
-      fineCands.push(bestL);
-    }
-    fineCands.sort((a, b) => b.sc - a.sc);
-    cands = fineCands;
-    dbg.fineCands = fineCands.map(c => [+c.rot.toFixed(1), Math.round(c.m / PT_M * state.scale), Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
+      fineCands.sort((a, b) => b.sc - a.sc);
+      cands = fineCands;
+      dbg.fineCands = fineCands.map(c => [+c.rot.toFixed(1), Math.round(c.m / PT_M * state.scale), Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
 
-    // Verfijnen met de exacte afstand (per richting), inclusief traploze schaal
-    const segsByBin = Array.from({ length: NBIN }, () => []);
-    tSegs.forEach(sg => { const b = binOf(Math.atan2(sg[3] - sg[1], sg[2] - sg[0]) * 180 / Math.PI); for (const bb of [(b + NBIN - 1) % NBIN, b, (b + 1) % NBIN]) segsByBin[bb].push(sg); });
-    const exactBin = segsByBin.map(list => segmentIndex(list, 1.5));
-    const scoreExact = (p, tol) => {
-      const c = Math.cos(p.rot * Math.PI / 180), s3 = Math.sin(p.rot * Math.PI / 180);
-      let sc = 0;
-      for (const [x, y, a] of fine) {
-        const dd = exactBin[binOf(a + p.rot)]((c * x - s3 * y) * p.m + p.tx, (s3 * x + c * y) * p.m + p.ty, tol);
-        if (dd < tol) sc += 1 - dd / tol;
+      // Verfijnen met de exacte afstand (per richting), inclusief traploze schaal
+      const segsByBin = Array.from({ length: NBIN }, () => []);
+      tSegs.forEach(sg => { const b = binOf(Math.atan2(sg[3] - sg[1], sg[2] - sg[0]) * 180 / Math.PI); for (const bb of [(b + NBIN - 1) % NBIN, b, (b + 1) % NBIN]) segsByBin[bb].push(sg); });
+      const exactBin = segsByBin.map(list => segmentIndex(list, 1.5));
+      const scoreExact = (p, tol) => {
+        const c = Math.cos(p.rot * Math.PI / 180), s3 = Math.sin(p.rot * Math.PI / 180);
+        let sc = 0;
+        for (const [x, y, a] of fine) {
+          const dd = exactBin[binOf(a + p.rot)]((c * x - s3 * y) * p.m + p.tx, (s3 * x + c * y) * p.m + p.ty, tol);
+          if (dd < tol) sc += 1 - dd / tol;
+        }
+        return sc / fine.length;
+      };
+      // Snelle score op de afstandskaarten (1 m) voor de grove rondes
+      const mid = pick(600);
+      const scoreField = (p, tol) => {
+        const c = Math.cos(p.rot * Math.PI / 180), s3 = Math.sin(p.rot * Math.PI / 180);
+        let sc = 0;
+        for (const [x, y, a] of mid) {
+          const i = ((c * x - s3 * y) * p.m + p.tx + off + 0.5) | 0, j = ((s3 * x + c * y) * p.m + p.ty + off + 0.5) | 0;
+          if (i < 0 || j < 0 || i >= size || j >= size) continue;
+          const dd = fields[binOf(a + p.rot)][j * size + i];
+          if (dd < tol) sc += 1 - dd / tol;
+        }
+        return sc / mid.length;
+      };
+      const STAGES = [[2, 0.5, 0.02, 3, scoreExact], [1, 0.25, 0.01, 2, scoreExact], [0.5, 0.1, 0.005, 1.2, scoreExact], [0.2, 0.04, 0.002, 0.8, scoreExact], [0.08, 0.015, 0.001, 0.5, scoreExact], [0.03, 0.006, 0.0005, 0.35, scoreExact]];
+      const climb = (cur, [stepT, stepR, stepS, tol, score]) => {
+        cur = { ...cur, sc: score(cur, tol) };
+        let improved = true, guard = 0;
+        while (improved && guard++ < 40) {
+          improved = false;
+          for (const [dx, dy, dr, ds] of [[stepT, 0, 0, 0], [-stepT, 0, 0, 0], [0, stepT, 0, 0], [0, -stepT, 0, 0], [0, 0, stepR, 0], [0, 0, -stepR, 0], [0, 0, 0, stepS], [0, 0, 0, -stepS]]) {
+            // schaal rond het midden van de tekening aanpassen: verschuiving blijft gelijk
+            const nx = { ...cur, tx: cur.tx + dx, ty: cur.ty + dy, rot: cur.rot + dr, m: cur.m * (1 + ds) };
+            const sc = score(nx, tol);
+            if (sc > cur.sc + 1e-6) { cur = { ...nx, sc }; improved = true; }
+          }
+        }
+        return cur;
+      };
+      const seenC = [];
+      for (const c0 of cands) {
+        if (seenC.some(q => Math.abs(q.rot - c0.rot) < 2 && Math.abs(q.m / c0.m - 1) < 0.06 && Math.hypot(q.tx - c0.tx, q.ty - c0.ty) < 8)) continue;
+        seenC.push(c0);
+        if (seenC.length >= 6) break;
       }
-      return sc / fine.length;
-    };
-    // Snelle score op de afstandskaarten (1 m) voor de grove rondes
-    const mid = pick(600);
-    const scoreField = (p, tol) => {
-      const c = Math.cos(p.rot * Math.PI / 180), s3 = Math.sin(p.rot * Math.PI / 180);
-      let sc = 0;
-      for (const [x, y, a] of mid) {
-        const i = ((c * x - s3 * y) * p.m + p.tx + off + 0.5) | 0, j = ((s3 * x + c * y) * p.m + p.ty + off + 0.5) | 0;
-        if (i < 0 || j < 0 || i >= size || j >= size) continue;
-        const dd = fields[binOf(a + p.rot)][j * size + i];
-        if (dd < tol) sc += 1 - dd / tol;
-      }
-      return sc / mid.length;
-    };
-    const STAGES = [[2, 0.5, 0.02, 3, scoreExact], [1, 0.25, 0.01, 2, scoreExact], [0.5, 0.1, 0.005, 1.2, scoreExact], [0.2, 0.04, 0.002, 0.8, scoreExact], [0.08, 0.015, 0.001, 0.5, scoreExact], [0.03, 0.006, 0.0005, 0.35, scoreExact]];
-    const climb = (cur, [stepT, stepR, stepS, tol, score]) => {
-      cur = { ...cur, sc: score(cur, tol) };
-      let improved = true, guard = 0;
-      while (improved && guard++ < 40) {
-        improved = false;
-        for (const [dx, dy, dr, ds] of [[stepT, 0, 0, 0], [-stepT, 0, 0, 0], [0, stepT, 0, 0], [0, -stepT, 0, 0], [0, 0, stepR, 0], [0, 0, -stepR, 0], [0, 0, 0, stepS], [0, 0, 0, -stepS]]) {
-          // schaal rond het midden van de tekening aanpassen: verschuiving blijft gelijk
-          const nx = { ...cur, tx: cur.tx + dx, ty: cur.ty + dy, rot: cur.rot + dr, m: cur.m * (1 + ds) };
-          const sc = score(nx, tol);
-          if (sc > cur.sc + 1e-6) { cur = { ...nx, sc }; improved = true; }
+      progress('Passing verfijnen');
+      await tick();
+      const ranked = seenC.map(c0 => climb(c0, STAGES[0])).sort((a, b) => b.sc - a.sc);
+      // Bijna gelijkspel (symmetrische wijk)? Dan de draaiing die het best past bij de stand van het situatiekaartje
+      if (loc.insetRot != null && ranked.length > 1) {
+        const close = ranked.filter(c => c.sc >= ranked[0].sc * 0.95);
+        if (close.length > 1) {
+          close.sort((a, b) => angDiff(a.rot, loc.insetRot) - angDiff(b.rot, loc.insetRot));
+          const pickC = close[0];
+          ranked.splice(ranked.indexOf(pickC), 1);
+          ranked.unshift(pickC);
         }
       }
-      return cur;
-    };
-    const seenC = [];
-    for (const c0 of cands) {
-      if (seenC.some(q => Math.abs(q.rot - c0.rot) < 2 && Math.abs(q.m / c0.m - 1) < 0.06 && Math.hypot(q.tx - c0.tx, q.ty - c0.ty) < 8)) continue;
-      seenC.push(c0);
-      if (seenC.length >= 6) break;
-    }
-    progress('Passing verfijnen');
-    await tick();
-    const ranked = seenC.map(c0 => climb(c0, STAGES[0])).sort((a, b) => b.sc - a.sc);
-    // Bijna gelijkspel (symmetrische wijk)? Dan de draaiing die het best past bij de stand van het situatiekaartje
-    if (loc.insetRot != null && ranked.length > 1) {
-      const close = ranked.filter(c => c.sc >= ranked[0].sc * 0.95);
-      if (close.length > 1) {
-        close.sort((a, b) => angDiff(a.rot, loc.insetRot) - angDiff(b.rot, loc.insetRot));
-        const pickC = close[0];
-        ranked.splice(ranked.indexOf(pickC), 1);
-        ranked.unshift(pickC);
+      let best = null;
+      if (ranked[0]) {
+        let cur = ranked[0];
+        for (const st of STAGES.slice(1)) { cur = climb(cur, st); await tick(); }
+        const c = Math.cos(cur.rot * Math.PI / 180), s4 = Math.sin(cur.rot * Math.PI / 180);
+        const fit = fine.filter(([x, y, a]) => exactBin[binOf(a + cur.rot)]((c * x - s4 * y) * cur.m + cur.tx, (s4 * x + c * y) * cur.m + cur.ty, 1) < 0.5).length / fine.length;
+        best = { ...cur, fit, mpp: cur.m, scaleN: Math.round(cur.m / PT_M * state.scale) };
+        dbg.ranked = ranked.map(c => [+c.rot.toFixed(1), Math.round(c.m / PT_M * state.scale), Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
       }
+      return { best, target };
     }
-    let best = null;
-    if (ranked[0]) {
-      let cur = ranked[0];
-      for (const st of STAGES.slice(1)) { cur = climb(cur, st); await tick(); }
-      const c = Math.cos(cur.rot * Math.PI / 180), s4 = Math.sin(cur.rot * Math.PI / 180);
-      const fit = fine.filter(([x, y, a]) => exactBin[binOf(a + cur.rot)]((c * x - s4 * y) * cur.m + cur.tx, (s4 * x + c * y) * cur.m + cur.ty, 1) < 0.5).length / fine.length;
-      best = { ...cur, fit, mpp: cur.m, scaleN: Math.round(cur.m / PT_M * state.scale) };
-      dbg.ranked = ranked.map(c => [+c.rot.toFixed(1), Math.round(c.m / PT_M * state.scale), Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
+    let best = null, target = null, bestCenter = null;
+    for (let i = 0; i < Math.min(startPoints.length, 4); i++) {
+      loc.center = startPoints[i];
+      if (i > 0) progress(`Andere plek proberen (${i + 1}/${Math.min(startPoints.length, 4)})`);
+      let res;
+      try { res = await attemptAt(); } catch (err) { if (i === 0 && startPoints.length === 1) throw err; continue; }
+      if (res.best && (!best || res.best.fit > best.fit)) { best = res.best; target = res.target; bestCenter = loc.center; }
+      if (best && best.fit >= 0.55) break;
     }
+    if (bestCenter) loc.center = bestCenter;
     if (!best) throw new Error('De lijnen van de tekening konden niet op de ondergrond worden gelegd.');
     const { kx, ky } = target;
     const c = Math.cos(best.rot * Math.PI / 180), s = Math.sin(best.rot * Math.PI / 180);
