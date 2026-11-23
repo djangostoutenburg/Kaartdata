@@ -1168,9 +1168,12 @@
 
   // Eigen bevestigingsvenster in plaats van confirm()
   const confirmDialog = $('#confirmDialog');
-  function askConfirm(title, text) {
+  function askConfirm(title, text, { ok = 'Verwijderen', danger = true } = {}) {
     $('#confirmTitle').textContent = title;
     $('#confirmText').textContent = text;
+    const okBtn = $('#confirmOk');
+    okBtn.textContent = ok;
+    okBtn.className = `btn ${danger ? 'danger-solid' : 'primary'}`;
     confirmDialog.returnValue = '';
     confirmDialog.showModal();
     return new Promise(resolve => {
@@ -1246,6 +1249,7 @@
       const sub = [f.props.ref && `<span class="f-ref mono">${esc(f.props.ref)}</span>`, f.props.category && esc(f.props.category), st].filter(Boolean).join(' · ');
       return `
       <li data-id="${esc(f.id)}" class="${f.id === selectedId ? 'selected' : ''}">
+        ${isArea(f) ? `<span class="f-drag" title="Sleep naar een ander vak om ze samen te voegen" aria-label="Slepen om samen te voegen">${icon('i-grip')}</span>` : '<span class="f-drag none"></span>'}
         <span class="f-icon" style="color:${esc(c)};background:${esc(c)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
         <span class="f-main">
           <div class="f-name">${esc(f.props.name || '(naamloos)')}</div>
@@ -1257,6 +1261,7 @@
   }
 
   listEl.addEventListener('click', (e) => {
+    if (e.target.closest('.f-drag')) return;
     const li = e.target.closest('li[data-id]');
     if (!li) return;
     if (isMobile()) closeSidebar();
@@ -1272,6 +1277,121 @@
     $('#typeFilter').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
     renderList();
   });
+
+
+  // ---------------------------------------------------------------- Vakken samenvoegen door slepen
+  // Sleep een vak (greep in de lijst) naar een ander vak in de lijst of op de kaart.
+  const isArea = (f) => f && f.shape !== 'Circle' && /Polygon/.test(f.geometry?.type || '');
+  let drag = null;
+
+  function areaAtPoint(clientX, clientY, exceptId) {
+    const r = map.getContainer().getBoundingClientRect();
+    if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return null;
+    const ll = map.containerPointToLatLng([clientX - r.left, clientY - r.top]);
+    const pt = turf.point([ll.lng, ll.lat]);
+    const p = Store.activeProject();
+    let best = null, bestA = Infinity;
+    (p ? Store.features(p.id) : []).forEach(f => {
+      if (f.id === exceptId || !isArea(f)) return;
+      try {
+        if (turf.booleanPointInPolygon(pt, f.geometry)) { const a = turf.area(f.geometry); if (a < bestA) { bestA = a; best = f; } }
+      } catch (e) { /* */ }
+    });
+    return best;
+  }
+
+  function setDropTarget(id) {
+    if (drag.target === id) return;
+    if (drag.target) {
+      listEl.querySelector(`li[data-id="${CSS.escape(drag.target)}"]`)?.classList.remove('drop-target');
+      const f = Store.feature(drag.target);
+      if (f) applyStyle(f);
+    }
+    drag.target = id;
+    if (id) {
+      listEl.querySelector(`li[data-id="${CSS.escape(id)}"]`)?.classList.add('drop-target');
+      featureLayers.get(id)?.setStyle?.({ color: '#e11d48', weight: 4, dashArray: null });
+    }
+    const name = id ? Store.feature(id)?.props.name : '';
+    drag.ghost.querySelector('small').textContent = id ? `Loslaten: samenvoegen met “${name || 'vak'}”` : 'Sleep naar een ander vak';
+    drag.ghost.classList.toggle('ok', !!id);
+  }
+
+  listEl.addEventListener('pointerdown', (e) => {
+    const handle = e.target.closest('.f-drag:not(.none)');
+    if (!handle) return;
+    const li = handle.closest('li[data-id]');
+    const f = Store.feature(li.dataset.id);
+    if (!isArea(f)) return;
+    e.preventDefault();
+    try { handle.setPointerCapture(e.pointerId); } catch (err) { /* geen echte aanwijzer (bijv. test) */ }
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    ghost.innerHTML = `<strong>${esc(f.props.name || 'Vak')}</strong><small>Sleep naar een ander vak</small>`;
+    document.body.appendChild(ghost);
+    drag = { id: f.id, handle, ghost, target: null, pointerId: e.pointerId };
+    li.classList.add('dragging');
+    document.body.classList.add('drag-merging');
+    moveGhost(e);
+  });
+
+  function moveGhost(e) {
+    drag.ghost.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 10}px)`;
+  }
+
+  listEl.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    moveGhost(e);
+    // lijst automatisch scrollen bij de randen
+    const lr = listEl.closest('.sb-scroll').getBoundingClientRect();
+    if (e.clientY < lr.top + 30) listEl.closest('.sb-scroll').scrollTop -= 10;
+    if (e.clientY > lr.bottom - 30) listEl.closest('.sb-scroll').scrollTop += 10;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const li = el?.closest?.('#featureList li[data-id]');
+    if (li && li.dataset.id !== drag.id && isArea(Store.feature(li.dataset.id))) { setDropTarget(li.dataset.id); return; }
+    const onMap = el?.closest?.('#map');
+    const f = onMap ? areaAtPoint(e.clientX, e.clientY, drag.id) : null;
+    setDropTarget(f ? f.id : null);
+  });
+
+  async function endDrag(e) {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const { id, target } = drag;
+    setDropTarget(null);
+    drag.ghost.remove();
+    listEl.querySelector('li.dragging')?.classList.remove('dragging');
+    document.body.classList.remove('drag-merging');
+    drag = null;
+    if (target && e.type === 'pointerup') await mergeAreas(id, target);
+  }
+  listEl.addEventListener('pointerup', endDrag);
+  listEl.addEventListener('pointercancel', endDrag);
+
+  async function mergeAreas(srcId, dstId) {
+    const src = Store.feature(srcId), dst = Store.feature(dstId);
+    if (!isArea(src) || !isArea(dst)) return;
+    const name = src.props.name && src.props.name !== dst.props.name ? `${dst.props.name} + ${src.props.name}` : dst.props.name;
+    const ok = await askConfirm('Vakken samenvoegen?',
+      `“${src.props.name || 'Vak'}” en “${dst.props.name || 'Vak'}” worden één vak: “${name}”. Kenmerken en notities van beide blijven bewaard.`,
+      { ok: 'Samenvoegen', danger: false });
+    if (!ok) return;
+    let merged = null;
+    try { merged = turf.union(turf.featureCollection([turf.feature(dst.geometry), turf.feature(src.geometry)])); } catch (err) { merged = null; }
+    if (!merged) { toast('Samenvoegen lukte niet voor deze vormen'); return; }
+    const refs = [...new Set([dst.props.ref, src.props.ref].flatMap(r => String(r || '').split(/\s*,\s*/)).filter(Boolean))];
+    const dstLines = new Set(String(dst.props.notes || '').split('\n'));
+    const extra = String(src.props.notes || '').split('\n').filter(l => l && !dstLines.has(l));
+    const notes = [dst.props.notes, `Samengevoegd met “${src.props.name || 'vak'}”${src.props.ref ? ` (${src.props.ref})` : ''} op ${new Date().toLocaleDateString('nl-NL')}.`, ...extra].filter(Boolean).join('\n');
+    let geometry = merged.geometry;
+    if (geometry.type === 'MultiPolygon' && geometry.coordinates.length === 1) geometry = { type: 'Polygon', coordinates: geometry.coordinates[0] };
+    Store.updateFeature(dst.id, { geometry, shape: 'Polygon', props: { ...dst.props, name, ref: refs.join(', '), notes } });
+    Store.deleteFeature(src.id);
+    if (selectedId === src.id) closePanel();
+    renderLayers();
+    renderList();
+    select(dst.id);
+    toast(geometry.type === 'MultiPolygon' ? 'Samengevoegd (de vakken raken elkaar niet, dus het blijven twee delen)' : 'Vakken samengevoegd');
+  }
 
   // ---------------------------------------------------------------- Eigenschappenpaneel
   const panel = $('#panel');
