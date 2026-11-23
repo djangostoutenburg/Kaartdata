@@ -481,8 +481,36 @@
       let any = 0;
       for (let i = 0; i < N; i++) if (cl.test(i)) { M[i] = 1; any++; }
       if (any < N * 0.0005) continue;
-      // dichten (stippellijnen), vullen, en dunne uitsteeksels (labels, aanwijslijnen) eraf
-      const E = box(box(fillHoles(box(M, R, false)), R + 8, true), 8, false);
+      // Gevuld vlak (lichte tint, bijv. lichtrood met een donkerrode stippelrand): de rand volgt de vulling,
+      // niet de stippels, stippen of tekst in dezelfde kleur → rechte randen zonder bobbels en uitsteeksels
+      let light = null, nLight = 0;
+      if (!cl.black) {
+        // meest voorkomende lichte kleur = de vulkleur; alleen pixels die daar dichtbij liggen (geen randjes van tekst/stippels)
+        const hist = new Map();
+        for (let i = 0; i < N; i++) if (M[i] && gray[i] > 170) { const j = i * 4, k = ((px[j] >> 3) << 10) | ((px[j + 1] >> 3) << 5) | (px[j + 2] >> 3); hist.set(k, (hist.get(k) || 0) + 1); }
+        const top = [...hist.entries()].sort((a, b) => b[1] - a[1])[0];
+        if (top) {
+          const fr = ((top[0] >> 10) << 3) + 4, fg = (((top[0] >> 5) & 31) << 3) + 4, fb = ((top[0] & 31) << 3) + 4;
+          light = new Uint8Array(N);
+          for (let i = 0, j = 0; i < N; i++, j += 4) {
+            const dr = px[j] - fr, dg = px[j + 1] - fg, db = px[j + 2] - fb;
+            if (dr * dr + dg * dg + db * db < 22 * 22) { light[i] = 1; nLight++; }
+          }
+        }
+      }
+      let E;
+      if (light && nLight > any * 0.3) {
+        // kleine gaatjes (arcering, stippen) dicht, vullen, dunne uitsteeksels eraf, dan tot het midden van de rand
+        // stippels van de rand (zelfde kleur, direct tegen de vulling) horen erbij; tekst verderop niet
+        const near = box(light, 3, false);
+        const base = new Uint8Array(N);
+        for (let i = 0; i < N; i++) base[i] = light[i] || (M[i] && near[i]) ? 1 : 0;
+        // dichten, vullen, dunne uitsteeksels eraf en terug naar het midden van de stippellijn
+        E = box(box(box(fillHoles(box(base, 4, false)), 4 + 9, true), 9, false), 2, true);
+      } else {
+        // alleen een (stippel)lijn: dichten, vullen en dunne uitsteeksels (labels, aanwijslijnen) eraf
+        E = box(box(fillHoles(box(M, R, false)), R + 8, true), 8, false);
+      }
       const core = box(E, RIN, true);                          // dunne dingen (tekst, lijnen) vallen hier af
       const lab = new Int32Array(N);
       let id = 0;
@@ -511,7 +539,7 @@
         if (P.length > 2 && P[P.length - 1][0] === P[0][0] && P[P.length - 1][1] === P[0][1]) P.pop();
         let far = 0, fd = -1;
         P.forEach(([x, y], k) => { const dd = (x - P[0][0]) ** 2 + (y - P[0][1]) ** 2; if (dd > fd) { fd = dd; far = k; } });
-        const ring = [...simplify(P.slice(0, far + 1), 2).slice(0, -1), ...simplify([...P.slice(far), P[0]], 2).slice(0, -1)]
+        const ring = [...simplify(P.slice(0, far + 1), 3).slice(0, -1), ...simplify([...P.slice(far), P[0]], 3).slice(0, -1)]
           .map(([x, y]) => [(x + 0.5) * F, (y + 0.5) * F]);
         if (ring.length < 3) continue;
         const fillish = onM / area > 0.4;
