@@ -309,6 +309,7 @@
       if (seenText.has(key)) return;                     // dubbel getekende tekst
       seenText.add(key);
       bestS.texts.push(t.str.replace(/\s+/g, ' ').trim());
+      if (distTo([t.x, t.y], bestS) === 0) (bestS.inside = bestS.inside || []).push(t.str.replace(/\s+/g, ' ').trim());
     });
     items.forEach(s => {
       const vak = s.texts.find(x => /^vak\s*\d+/i.test(x));
@@ -319,7 +320,10 @@
       s.gis = gis ? gis[1] : '';
       s.areaText = area ? `${area[1]} m²` : '';
       s.extra = rest.filter(x => x.length >= 12);
-      s.label = s.vakName || rest.filter(x => x.length < 12 && /[a-z]/i.test(x)).join(' ') || '';
+      // naam: vaknummer, anders korte tekst ín het vak (plantcode); tekst ernaast alleen in de notities
+      const insideShort = (s.inside || []).filter(x => x !== vak && x.length < 12 && /[a-z]/i.test(x) && !/GIS\s*ID/i.test(x) && !/^\d[\d.,]*\s*m(2|²)$/i.test(x));
+      s.label = s.vakName || [...new Set(insideShort)].join(' ') || '';
+      s.extra = [...new Set([...s.extra, ...rest.filter(x => x.length < 12 && /[a-z]/i.test(x) && !insideShort.includes(x)).map(x => `Bij het vak: ${x}`)])];
     });
     const groups = new Map();
     items.forEach(s => {
@@ -402,6 +406,12 @@
     };
     for (let i = 0; i < cands.length; i += 6) await Promise.all(cands.slice(i, i + 6).map(one));
     if (!matches.length) return null;
+    // ook herhalingen van dezelfde straatnaam elders op het blad (bijv. groot in de tekening én klein in het kaartje)
+    texts.forEach(t => {
+      if (labelTexts.includes(t)) return;
+      const twin = labelTexts.find(l => compact(l.str) === compact(t.str));
+      if (twin) { t.streetName = twin.streetName; t.streetLL = twin.streetLL; labelTexts.push(t); }
+    });
     // Plaats met de meeste gevonden straten (bonus als de plaats- of gemeentenaam ook op het plan staat)
     const byPlace = {};
     matches.forEach(m => {
@@ -423,23 +433,37 @@
     return { center, place: best.place, streets: [...best.streets.keys()], labelTexts: labelTexts.filter(t => best.streets.has(t.streetName)) };
   }
 
-  // Situatiekaartje georefereren met de straatnamen erin (positie op het kaartje ↔ midden van de straat)
-  // en dan de markering (rood kader/stip/vlak) of het midden van het kaartje omrekenen naar de kaart.
-  function locateFromInset(b, labelTexts, lines) {
+  // Situatiekaartje georefereren met de straatnamen erin. Eerst met het midden van elke straat; daarna
+  // (als de BGT-straatlabels er zijn) met het dichtstbijzijnde BGT-label van dezelfde naam — veel nauwkeuriger.
+  // Geeft { toLL, marker: [lat,lng] } of null.
+  function insetGeoref(b, labelTexts, lines, bgtLabels, init) {
     const inB = (x, y) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
-    const byStreet = new Map();
-    labelTexts.filter(t => inB(t.x, t.y)).forEach(t => { if (!byStreet.has(t.streetName)) byStreet.set(t.streetName, t); });
-    const pairs = [...byStreet.values()];
-    if (pairs.length < 2) return null;
-    const lat0 = pairs[0].streetLL[0], lng0 = pairs[0].streetLL[1];
+    const texts = labelTexts.filter(t => inB(t.x, t.y));
+    if (new Set(texts.map(t => t.streetName)).size < 2) return null;
+    const cname = (n) => norm(n).replace(/ /g, '');
+    const lat0 = texts[0].streetLL[0], lng0 = texts[0].streetLL[1];
     const kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
-    const Z = pairs.map(t => [t.x, -t.y]), Wm = pairs.map(t => [(t.streetLL[1] - lng0) * kx, (t.streetLL[0] - lat0) * ky]);
-    const zm = [Z.reduce((a, p) => a + p[0], 0) / Z.length, Z.reduce((a, p) => a + p[1], 0) / Z.length];
-    const wm = [Wm.reduce((a, p) => a + p[0], 0) / Wm.length, Wm.reduce((a, p) => a + p[1], 0) / Wm.length];
+    const toM = ([lat, lng]) => [(lng - lng0) * kx, (lat - lat0) * ky];
+    const pairs = [];
+    texts.forEach(t => {
+      let geo = t.streetLL;
+      if (bgtLabels && init) {
+        const guess = init.toLL(t.x, t.y);
+        let bestD = Infinity;
+        bgtLabels.filter(l => cname(l.name) === cname(t.streetName) && l.ll).forEach(l => {
+          const d = Math.hypot((l.ll[0] - guess[0]) * ky, (l.ll[1] - guess[1]) * kx);
+          if (d < bestD) { bestD = d; geo = l.ll; }
+        });
+      }
+      pairs.push({ z: [t.x, -t.y], w: toM(geo) });
+    });
+    const n = pairs.length;
+    const zm = [pairs.reduce((a, p) => a + p.z[0], 0) / n, pairs.reduce((a, p) => a + p.z[1], 0) / n];
+    const wm = [pairs.reduce((a, p) => a + p.w[0], 0) / n, pairs.reduce((a, p) => a + p.w[1], 0) / n];
     let nr = 0, ni = 0, den = 0;
-    Z.forEach((z, i) => {
-      const zr = z[0] - zm[0], zi = z[1] - zm[1], wr = Wm[i][0] - wm[0], wi = Wm[i][1] - wm[1];
-      nr += wr * zr + wi * zi; ni += wi * zr - wr * zi; den += zr * zr + zi * zi;   // (w)·conj(z)
+    pairs.forEach(({ z, w }) => {
+      const zr = z[0] - zm[0], zi = z[1] - zm[1], wr = w[0] - wm[0], wi = w[1] - wm[1];
+      nr += wr * zr + wi * zi; ni += wi * zr - wr * zi; den += zr * zr + zi * zi;
     });
     if (den < 1e-6) return null;
     const a = [nr / den, ni / den];
@@ -448,7 +472,7 @@
       const X = a[0] * zr - a[1] * zi + wm[0], Y = a[0] * zi + a[1] * zr + wm[1];
       return [lat0 + Y / ky, lng0 + X / kx];
     };
-    // markering: sterk gekleurde lijnen/vlakken in het kaartje (rood kader, stip, gearceerd vlak)
+    // markering: sterk gekleurde lijnen/vlakken in het kaartje (rood/oranje kader, stip, vlak)
     const mark = [];
     lines.forEach(l => {
       if (saturation(l.color) < 0.5) return;
@@ -457,12 +481,12 @@
     let px;
     if (mark.length >= 3) {
       const bb = bboxOf(mark);
-      // alleen een duidelijke, kleine markering (niet het halve kaartje vol met gekleurde wegen)
       if ((bb[2] - bb[0]) < (b[2] - b[0]) * 0.6 && (bb[3] - bb[1]) < (b[3] - b[1]) * 0.6) px = [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2];
     }
     if (!px) px = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
-    return toLL(px[0], px[1]);
+    return { toLL, marker: toLL(px[0], px[1]), hasMarker: mark.length >= 3, rot: Math.atan2(a[1], a[0]) * 180 / Math.PI };
   }
+  const locateFromInset = (b, labelTexts, lines) => insetGeoref(b, labelTexts, lines)?.marker || null;
 
   async function fetchTarget(center, radius, progress) {
     const kx = 111320 * Math.cos(center[0] * Math.PI / 180), ky = 110540;
@@ -501,7 +525,7 @@
     try {
       const bbox = [center[1] - dLng, center[0] - dLat, center[1] + dLng, center[0] + dLat].map(v => v.toFixed(6)).join(',');
       const d = await (await fetch(`${BGT}/openbareruimtelabel/items?f=json&limit=1000&bbox=${bbox}&datetime=${now}`)).json();
-      (d.features || []).forEach(f => labels.push({ name: f.properties.openbareruimtenaam, hoek: +f.properties.hoek }));
+      (d.features || []).forEach(f => labels.push({ name: f.properties.openbareruimtenaam, hoek: +f.properties.hoek, ll: f.geometry ? [f.geometry.coordinates[1], f.geometry.coordinates[0]] : null }));
     } catch (e) { /* zonder labels verder */ }
     return { rings, kx, ky, labels };
   }
@@ -657,7 +681,14 @@
 
     // Waar ligt het plan? Straatnamen op het blad (tekening en titelblok, niet het kaartje); anders via het situatiekaartje
     const drawLabels = loc.labelTexts.filter(t => inB(drawArea, t.x, t.y) && !inInset(t.x, t.y));
-    const sheetLabels = loc.labelTexts.filter(t => !inInset(t.x, t.y));
+    // Titelblok (kader met "Schaal", "Project" e.d.): daar staan adressen van het bureau, niet van het plan
+    const titleBlocks = rects.filter(b => b !== drawArea && areaOf(b) < W * H * 0.4 && titleTexts.some(t => inB(b, t.x, t.y)));
+    const inTitle = (t) => titleBlocks.some(b => inB(b, t.x, t.y));
+    // straatnaam mét huisnummer in het titelblok = adres van het bureau → overslaan; zonder nummer = projectlocatie
+    // adres van het bureau: straatnaam met postcode/postbus/bureaunaam vlak in de buurt
+    const isOfficeAddress = (t) => texts.some(o => o !== t && Math.hypot(o.x - t.x, o.y - t.y) < Math.max(t.h, 4) * 8 &&
+      /postbus|\b\d{4}\s?[a-z]{2}\b|ingenieursbureau|gemeente amsterdam|www\.|@/i.test(o.str));
+    const sheetLabels = loc.labelTexts.filter(t => !inInset(t.x, t.y) && !(inTitle(t) && /\d/.test(t.str)) && !isOfficeAddress(t));
     let locSource = 'straatnamen';
     if (sheetLabels.length) {
       const pts = [...new Map(sheetLabels.map(t => [t.streetName, t.streetLL])).values()];
@@ -665,10 +696,15 @@
       const c0 = [med(pts.map(p => p[0])), med(pts.map(p => p[1]))];
       const near = pts.filter(p => Math.hypot((p[0] - c0[0]) * 111, (p[1] - c0[1]) * 68) < 0.8);
       loc.center = [near.reduce((a, p) => a + p[0], 0) / near.length, near.reduce((a, p) => a + p[1], 0) / near.length];
-    } else if (insets.length) {
-      const c = locateFromInset(insets[0], loc.labelTexts, lines);
-      if (c) { loc.center = c; locSource = 'situatiekaartje'; }
     }
+    // Situatiekaartje met markering: nauwkeuriger startpunt dan de straatnamen (identieke hofjes e.d.)
+    let insetRough = null;
+    if (insets.length) {
+      insetRough = insetGeoref(insets[0], loc.labelTexts, lines);
+      const far = insetRough && Math.hypot((insetRough.marker[0] - loc.center[0]) * 111, (insetRough.marker[1] - loc.center[1]) * 68) > 1.5;
+      if (insetRough && (!sheetLabels.length || (insetRough.hasMarker && !far))) { loc.center = insetRough.marker; locSource = 'situatiekaartje'; }
+    }
+    loc.allLabels = loc.labelTexts;
     loc.labelTexts = drawLabels;     // richting alleen uit straatnamen in de tekening zelf (niet uit het kaartje)
     loc.source = locSource;
     loc.insets = insets;
@@ -676,6 +712,16 @@
     const R = Math.min(550, Math.round(halfDiag * 0.7 + 200));
     const target = await fetchTarget(loc.center, R, progress);
     if (target.rings.length < 20) throw new Error('Te weinig BGT-ondergrond gevonden rond ' + loc.streets[0] + '.');
+    // Kaartje nauwkeuriger georefereren met de BGT-straatlabels → startpunt binnen enkele tientallen meters
+    let prior = null;
+    if (locSource === 'situatiekaartje' && insetRough) {
+      let g = insetRough;
+      global.__insetDbg = { rough: insetRough.marker, hasMarker: insetRough.hasMarker, inset: insets[0], insetTexts: loc.allLabels.filter(t => inB(insets[0], t.x, t.y)).map(t => [t.str, Math.round(t.x), Math.round(t.y)]), nLabels: target.labels.length, steps: [] };
+      for (let it = 0; it < 3; it++) { g = insetGeoref(insets[0], loc.allLabels, lines, target.labels, g) || g; global.__insetDbg.steps.push(g.marker); }
+      const kx0 = 111320 * Math.cos(loc.center[0] * Math.PI / 180);
+      prior = [(g.marker[1] - loc.center[1]) * kx0, (g.marker[0] - loc.center[0]) * 110540];   // meters t.o.v. het opgehaalde midden
+      loc.insetRot = g.rot;
+    }
     progress('Ondergrond voorbereiden');
     await tick();
     const field = directionalFields(target.rings, R);
@@ -738,13 +784,14 @@
       rots = grid.length ? grid : top.flatMap(t => [t, t + 180]).flatMap(r => [r - 2, r, r + 2]);
     }
     if (global.__planForce?.rots) rots = global.__planForce.rots;
-    const dbg = (global.__planDebug = { drawArea, nPts: upts.length, labelRots, tDom, sDom, rots: rots.map(r => Math.round(r)), scales: tryScales });
+    const dbg = (global.__planDebug = { prior, insetRot: loc.insetRot, streets: loc.streets, labels: loc.labelTexts.map(t => [t.str, t.streetName]), center: loc.center, source: loc.source, insets, drawArea, nPts: upts.length, labelRots, tDom, sDom, rots: rots.map(r => Math.round(r)), scales: tryScales });
 
     // Grof zoeken over schaal × draaiing × positie met de richtings-afstandskaarten
     const { fields, size, off } = field;
     const n = coarse.length;
     const rx = new Float64Array(n), ry = new Float64Array(n), rb = new Uint8Array(n);
-    const span = Math.max(40, Math.min(R * 0.8, 300));
+    const span = prior ? 150 : Math.max(40, Math.min(R * 0.8, 300));
+    const [ox, oy] = prior || [0, 0];
     const TOL = 4, STEP = 4;
     let cands = [], floor = 0.15, combo = 0;
     for (const scaleN of tryScales) {
@@ -753,7 +800,7 @@
         if (combo++ % 6 === 0) { progress(`Tekening op de ondergrond passen (${Math.round(combo / (tryScales.length * rots.length) * 100)}%)`); await tick(); }
         const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
         for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
-        for (let ty = -span; ty <= span; ty += STEP) for (let tx = -span; tx <= span; tx += STEP) {
+        for (let ty = oy - span; ty <= oy + span; ty += STEP) for (let tx = ox - span; tx <= ox + span; tx += STEP) {
           let sc = 0;
           for (let k = 0; k < n; k++) {
             const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
@@ -848,6 +895,16 @@
     progress('Passing verfijnen');
     await tick();
     const ranked = seenC.map(c0 => climb(c0, STAGES[0])).sort((a, b) => b.sc - a.sc);
+    // Bijna gelijkspel (symmetrische wijk)? Dan de draaiing die het best past bij de stand van het situatiekaartje
+    if (loc.insetRot != null && ranked.length > 1) {
+      const close = ranked.filter(c => c.sc >= ranked[0].sc * 0.95);
+      if (close.length > 1) {
+        close.sort((a, b) => angDiff(a.rot, loc.insetRot) - angDiff(b.rot, loc.insetRot));
+        const pickC = close[0];
+        ranked.splice(ranked.indexOf(pickC), 1);
+        ranked.unshift(pickC);
+      }
+    }
     let best = null;
     if (ranked[0]) {
       let cur = ranked[0];
@@ -1228,6 +1285,8 @@
     };
     const m2PerPx2 = t.metresPerPx * t.metresPerPx;
     const groups = state.groups;
+    // groepen met alleen piepkleine vlakjes (getekende letters, pijlpunten) standaard uit
+    groups.forEach(g => { if (g.checked && g.pxArea * m2PerPx2 / g.items.length < 1) g.checked = false; });
     let idx = 0;
     let idxO = 0, idxG = 0;
     groups.forEach(g => {
