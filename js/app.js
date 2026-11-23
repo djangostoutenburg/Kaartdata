@@ -1091,6 +1091,9 @@
       createFromLayer(o.shape, featureToLayer({ shape: o.shape, geometry: o.geometry, props: o.props }), o.props);
       return;
     }
+    // meerdere objecten in één keer overgenomen → één groep in de lijst
+    const gid = 'bgt-' + Date.now().toString(36);
+    toCreate.forEach(o => { o.props.groupId = gid; o.props.group = `Groen uit BGT (${new Date().toLocaleDateString('nl-NL')})`; });
     const created = toCreate.map(o => {
       const f = Store.addFeature({ projectId: p.id, shape: o.shape, geometry: o.geometry, props: o.props });
       attachLayer(f);
@@ -1243,12 +1246,13 @@
         : `<li class="empty">${icon('i-empty')}<strong>Nog geen objecten</strong><span>Kies een tekengereedschap en klik op de kaart om je eerste gebied of asset vast te leggen.</span></li>`;
       return;
     }
-    listEl.innerHTML = items.map(f => {
+    // Objecten met dezelfde groep (bijv. alle vakken uit één beplantingsplan) onder één kopregel
+    const rowHtml = (f, child) => {
       const c = colorOf(f);
       const st = f.props.status ? `<span class="status ${STATUS_CLASS[f.props.status] || ''}">${esc(f.props.status)}</span>` : '';
       const sub = [f.props.ref && `<span class="f-ref mono">${esc(f.props.ref)}</span>`, f.props.category && esc(f.props.category), st].filter(Boolean).join(' · ');
       return `
-      <li data-id="${esc(f.id)}" class="${f.id === selectedId ? 'selected' : ''}">
+      <li data-id="${esc(f.id)}" class="${f.id === selectedId ? 'selected' : ''}${child ? ' child' : ''}">
         ${isArea(f) ? `<span class="f-drag" title="Sleep naar een ander vak om ze samen te voegen" aria-label="Slepen om samen te voegen">${icon('i-grip')}</span>` : '<span class="f-drag none"></span>'}
         <span class="f-icon" style="color:${esc(c)};background:${esc(c)}1f">${icon(SHAPE_ICON[shapeOf(f)])}</span>
         <span class="f-main">
@@ -1257,11 +1261,62 @@
         </span>
         <span class="f-measure">${esc(measureText(f, true))}</span>
       </li>`;
-    }).join('');
+    };
+    const groupsSeen = new Map();
+    items.forEach(f => { const g = f.props.groupId; if (g) { if (!groupsSeen.has(g)) groupsSeen.set(g, []); groupsSeen.get(g).push(f); } });
+    const allInGroup = (gid) => all.filter(f => f.props.groupId === gid);
+    const done = new Set();
+    let html = '';
+    items.forEach(f => {
+      const gid = f.props.groupId;
+      if (!gid) { html += rowHtml(f, false); return; }
+      if (done.has(gid)) return;
+      done.add(gid);
+      const members = groupsSeen.get(gid);
+      const total = allInGroup(gid);
+      const area = total.reduce((t, x) => t + (measure(x).area || 0), 0);
+      const open = !collapsedGroups.has(gid) || !!q;
+      const colors = [...new Set(total.map(colorOf))].slice(0, 5);
+      html += `
+      <li class="group-row ${open ? 'open' : ''}" data-group="${esc(gid)}">
+        <button type="button" class="g-toggle" aria-label="${open ? 'Inklappen' : 'Uitklappen'}" aria-expanded="${open}">${icon('i-chevron')}</button>
+        <span class="g-swatches">${colors.map(c => `<i style="background:${esc(c)}"></i>`).join('')}</span>
+        <span class="f-main">
+          <div class="f-name">${esc(f.props.group || 'Groep')}</div>
+          <div class="f-sub">${total.length} ${total.length === 1 ? 'vak' : 'vakken'}${q && members.length !== total.length ? ` · ${members.length} gevonden` : ''}</div>
+        </span>
+        <span class="f-measure">${area ? esc(areaParts(area).slice(0, 2).join(' ')) : ''}</span>
+      </li>`;
+      if (open) html += members.map(m => rowHtml(m, true)).join('');
+    });
+    listEl.innerHTML = html;
+  }
+
+  const collapsedGroups = new Set();
+  function zoomToGroup(gid) {
+    const b = L.latLngBounds([]);
+    featureLayers.forEach((l, id) => {
+      if (Store.feature(id)?.props.groupId !== gid) return;
+      if (l.getBounds) b.extend(l.getBounds()); else b.extend(l.getLatLng());
+    });
+    if (b.isValid()) map.fitBounds(b, { padding: [40, 40], maxZoom: 20 });
   }
 
   listEl.addEventListener('click', (e) => {
     if (e.target.closest('.f-drag')) return;
+    const grow = e.target.closest('li.group-row');
+    if (grow) {
+      const gid = grow.dataset.group;
+      if (e.target.closest('.g-toggle')) {
+        if (collapsedGroups.has(gid)) collapsedGroups.delete(gid); else collapsedGroups.add(gid);
+        renderList();
+      } else {
+        if (isMobile()) closeSidebar();
+        closePanel();
+        zoomToGroup(gid);
+      }
+      return;
+    }
     const li = e.target.closest('li[data-id]');
     if (!li) return;
     if (isMobile()) closeSidebar();
@@ -1956,6 +2011,20 @@
     renderList();
     renderCategories();
   }
+
+  // Eerder geïmporteerde vakken uit een beplantingsplan alsnog groeperen (herkenbaar aan de notitie)
+  (function groupOldPlanImports() {
+    let changed = false;
+    Store.state.features.forEach(f => {
+      if (f.props.groupId) return;
+      const m = /Uit beplantingsplan “([^”]+)”/.exec(f.props.notes || '');
+      if (!m) return;
+      f.props.groupId = 'plan:' + f.projectId + ':' + m[1];
+      f.props.group = m[1].replace(/\.pdf$/i, '').replace(/^\d{6,8}[_ -]*/, '').replace(/_+/g, ' ').trim() || 'Beplantingsplan';
+      changed = true;
+    });
+    if (changed) Store.save();
+  })();
 
   if (!Store.projects().length) {
     Store.addProject({ name: 'Mijn eerste project', description: 'Teken een polygoon om te beginnen.', color: '#0a6c8f' });

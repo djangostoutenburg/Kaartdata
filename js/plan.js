@@ -1333,6 +1333,9 @@
     btn.addEventListener('click', () => {
       const useLabels = body.querySelector('#planUseLabels').checked;
       const feats = [];
+      // alle vakken uit dit plan horen bij één groep (één regel in de objectenlijst)
+      const planGroupId = 'plan-' + Date.now().toString(36);
+      const planGroupName = state.file.name.replace(/\.pdf$/i, '').replace(/^\d{6,8}[_ -]*/, '').replace(/[_]+/g, ' ').trim() || 'Beplantingsplan';
       groups.filter(g => g.checked).forEach(g => g.items.forEach(s => {
         const geometry = { type: 'Polygon', coordinates: [toGeo(s.outer), ...s.holes.map(toGeo)] };
         feats.push({
@@ -1344,6 +1347,8 @@
             category: 'Beplanting',
             status: 'Gepland',
             ref: s.gis ? `GIS ${s.gis}` : '',
+            groupId: planGroupId,
+            group: planGroupName,
             color: g.color,
             fill: g.kind === 'outline' ? 'geen' : 'effen',
             notes: [

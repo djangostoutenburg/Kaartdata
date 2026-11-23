@@ -703,3 +703,17 @@ body.drag-merging, body.drag-merging * { cursor: grabbing !important; user-selec
 .drag-ghost small { color: #9fb0c3; }
 .drag-ghost.ok { background: var(--accent); }
 .drag-ghost.ok small { color: #e2f0f6; }
+
+/* ---------------------------------------------------------------- Groepen in de objectenlijst */
+#featureList li.group-row { grid-template-columns: 18px 28px 1fr auto; background: var(--surface-2); border: 1px solid var(--line); margin-top: 4px; }
+#featureList li.group-row:hover { background: var(--accent-soft); }
+#featureList li.group-row .f-name { font-weight: 700; }
+.g-toggle { width: 18px; height: 28px; display: grid; place-items: center; border: 0; background: none; padding: 0; color: var(--muted); }
+.g-toggle svg { width: 16px; height: 16px; transition: transform .15s; }
+li.group-row.open .g-toggle svg { transform: rotate(-90deg); }
+li.group-row:not(.open) .g-toggle svg { transform: rotate(180deg); }
+.g-swatches { width: 28px; height: 28px; border-radius: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 4px; background: var(--surface); border: 1px solid var(--line); }
+.g-swatches i { border-radius: 2px; min-height: 8px; }
+.g-swatches i:only-child { grid-column: 1 / -1; grid-row: 1 / -1; }
+#featureList li.child { margin-left: 18px; position: relative; }
+#featureList li.child::before { content: ""; position: absolute; left: -9px; top: 0; bottom: 0; border-left: 2px solid var(--line); }
