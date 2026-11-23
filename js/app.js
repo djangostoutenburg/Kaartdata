@@ -75,7 +75,7 @@
 
   const savedBase = Store.state.baseLayer && baseLayers[Store.state.baseLayer] ? Store.state.baseLayer : 'PDOK Standaard';
   baseLayers[savedBase].addTo(map);
-  L.control.layers(baseLayers, overlays, { position: 'topright' }).addTo(map);
+  const layersControl = L.control.layers(baseLayers, overlays, { position: 'topright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
   map.on('baselayerchange', (e) => { if (viewerMode) return; Store.state.baseLayer = e.name; Store.save(); });
 
@@ -1618,6 +1618,28 @@
       console.error(err);
       alert('Importeren mislukt: ' + err.message);
     }
+  });
+
+  // ---------------------------------------------------------------- Beplantingsplan (PDF) importeren
+  function addFeatures(list) {
+    const p = Store.activeProject();
+    if (!p || !list.length) return;
+    const created = list.map(o => {
+      const f = Store.addFeature({ projectId: p.id, ...o });
+      attachLayer(f);
+      return f;
+    });
+    renderList();
+    renderCategories();
+    const b = L.latLngBounds([]);
+    created.forEach(f => { const l = featureLayers.get(f.id); if (l?.getBounds) b.extend(l.getBounds()); });
+    if (b.isValid()) map.fitBounds(b, { padding: [40, 40], maxZoom: 20 });
+  }
+  $('#importPlan').addEventListener('click', () => {
+    if (!Store.activeProject()) { toast('Maak eerst een project aan'); return; }
+    stopPick(); stopDrawing(); stopEditing(); closePanel();
+    if (isMobile()) closeSidebar();
+    PlanImport.open({ map, addFeatures, toast, isMobile, layersControl });
   });
 
   // ---------------------------------------------------------------- Print

@@ -74,8 +74,8 @@ html { touch-action: pan-x pan-y; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* Alleen interface-iconen; de kaartlagen (Leaflet-SVG) blijven onaangetast */
-:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, .locate-btn, .viewer-card, dialog) svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, .locate-btn, .viewer-card, dialog) svg .fill { fill: currentColor; stroke: none; }
+:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, .locate-btn, .viewer-card, .plan-panel, dialog) svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+:where(#sidebar, #panel, .map-top, .draw-hint, .mobile-tools, .locate-btn, .viewer-card, .plan-panel, dialog) svg .fill { fill: currentColor; stroke: none; }
 
 #app { display: flex; height: 100vh; height: 100dvh; overflow: hidden; }
 
@@ -606,3 +606,75 @@ html.locked #app, html.locked dialog, html.locked #toast { display: none !import
 .gate-remember { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; margin: 4px 0 0; }
 .gate-remember input { width: 16px; height: 16px; margin: 0; }
 .gate-error { min-height: 18px; margin: 0; color: var(--danger); font-size: 13px; }
+
+/* ---------------------------------------------------------------- Beplantingsplan importeren */
+.sb-footer .plan-btn { grid-column: 1 / -1; background: var(--accent-soft); border-color: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.sb-footer .plan-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+.plan-panel {
+  position: absolute; z-index: 1200; left: 12px; top: 12px; bottom: 12px; width: min(460px, 46%);
+  display: flex; flex-direction: column; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lg); overflow: hidden;
+}
+.plan-panel[hidden] { display: none; }
+body.planning .map-top, body.planning .mobile-tools { display: none; }
+body.planning .leaflet-top.leaflet-left { left: calc(min(460px, 46%) + 12px); }
+.plan-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 14px 14px 10px 16px; border-bottom: 1px solid var(--line); }
+.plan-head h2 { margin: 2px 0 0; font-size: 16.5px; }
+.plan-step { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.plan-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.plan-drop { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 28px 16px; border: 2px dashed var(--line-strong); border-radius: 12px; cursor: pointer; color: var(--muted); }
+.plan-drop:hover, .plan-drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.plan-drop.busy { opacity: .6; pointer-events: none; }
+.plan-drop svg { width: 30px; height: 30px; color: var(--accent); }
+.plan-drop strong { color: var(--text); font-size: 15px; }
+.plan-hint, .plan-instr { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.plan-instr strong { color: var(--text); }
+.plan-error { margin: 0; color: var(--danger); font-size: 13px; }
+.plan-error:empty { display: none; }
+.plan-row { display: flex; align-items: center; gap: 10px; }
+.plan-row label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.plan-row select { width: auto; }
+.plan-viewer { flex: 1; min-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: #f3f4f6; overscroll-behavior: contain; }
+.plan-canvas-wrap { position: relative; display: inline-block; line-height: 0; }
+.plan-canvas { display: block; cursor: crosshair; height: auto; touch-action: pan-x pan-y pinch-zoom; }
+.plan-dot, .plan-pin span {
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: #e11d48; color: #fff; font: 700 12px var(--font); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4);
+}
+.plan-dot { position: absolute; transform: translate(-50%, -50%); line-height: 1; pointer-events: none; }
+.plan-pin { background: none; border: 0; }
+.plan-zoom { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.plan-scale { margin-left: auto; font: 12px var(--mono); color: var(--muted); }
+.plan-opacity { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
+.plan-opacity input { flex: 1; padding: 0; }
+.plan-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; position: sticky; bottom: 0; background: var(--surface); padding: 8px 0 12px; margin-top: auto; }
+.plan-groups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.plan-groups li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; opacity: .6; }
+.plan-groups li.on { opacity: 1; border-color: var(--line-strong); }
+.plan-groups input[type=checkbox] { width: 18px; height: 18px; margin: 0; flex: none; }
+.plan-swatch { width: 30px; height: 30px; border-radius: 6px; flex: none; background: var(--c); border: 1px solid rgba(0,0,0,.15); }
+.plan-swatch.outline { background: transparent; border: 3px solid var(--c); }
+.plan-g-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.plan-g-name { padding: 5px 8px; font-weight: 600; }
+.plan-g-main small { font-size: 12px; color: var(--muted); }
+.plan-more summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); padding: 4px 0; }
+.plan-more[open] summary { margin-bottom: 6px; }
+.plan-more .plan-hint { margin-bottom: 8px; }
+.plan-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.plan-check input { width: 16px; height: 16px; margin: 0; }
+.plan-empty { padding: 14px; border-radius: 10px; background: var(--surface-2); }
+.plan-empty p { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+.plan-overlay { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; image-rendering: auto; }
+@media (max-width: 820px) {
+  .plan-panel { position: fixed; left: 0; right: 0; top: 0; bottom: auto; width: auto; height: 56vh; border-radius: 0 0 16px 16px; padding-top: env(safe-area-inset-top, 0px); z-index: 1900; }
+  body.planning .leaflet-top { top: calc(56vh + 8px) !important; }
+  body.planning .leaflet-top.leaflet-left { left: 0; }
+  .plan-viewer { min-height: 120px; }
+  .plan-panel { height: 60vh; }
+  body.planning .leaflet-top { top: calc(60vh + 8px) !important; }
+  .plan-head { padding: 10px 12px 8px 14px; }
+  .plan-head h2 { font-size: 15px; }
+  .plan-body { padding: 10px 14px 0; gap: 8px; }
+  .plan-instr, .plan-hint { font-size: 12.5px; line-height: 1.4; }
+  .plan-zoom .btn { height: 30px; }
+}

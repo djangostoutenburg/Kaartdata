@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/geoman/leaflet-geoman.css">
-  <link rel="stylesheet" href="css/style.css?v=20261122d">
+  <link rel="stylesheet" href="css/style.css?v=20261123a">
   <script>
     // Wachtwoordtoegang: vergrendeld tenzij dit apparaat (of dit tabblad) al toegang heeft
     (function () {
@@ -58,6 +58,7 @@
       <symbol id="i-merge" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="10" height="10" rx="1"/><rect x="10.5" y="10.5" width="10" height="10" rx="1"/></symbol>
       <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
+      <symbol id="i-plan" viewBox="0 0 24 24"><path d="M14 3.5H6.5a1 1 0 0 0-1 1v15a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V8z"/><path d="M14 3.5V8h4.5"/><path d="M8.5 16.5c1.5-2.5 3-2.5 4 0s2.5 2.5 3 .5"/><circle cx="10" cy="12" r="1.2" class="fill"/></symbol>
       <symbol id="i-next" viewBox="0 0 24 24"><path d="M4 12h13M13 7l5 5-5 5"/></symbol>
       <symbol id="i-empty" viewBox="0 0 48 48"><path d="M10 34l6-20 18 4 4 16z" stroke-dasharray="3 3"/><circle cx="10" cy="34" r="2.2" class="fill"/><circle cx="16" cy="14" r="2.2" class="fill"/><circle cx="34" cy="18" r="2.2" class="fill"/></symbol>
     </defs>
@@ -149,6 +150,7 @@
       </div>
 
       <footer class="sb-footer">
+        <button id="importPlan" class="btn plan-btn" title="Beplantingsvakken uit een PDF-tekening overnemen"><svg><use href="#i-plan"/></svg>Beplantingsplan (PDF) importeren</button>
         <button id="exportProject" class="btn" title="Project downloaden als GeoJSON"><svg><use href="#i-download"/></svg>GeoJSON</button>
         <button id="exportCsv" class="btn" title="Objectenlijst downloaden als CSV (Excel)"><svg><use href="#i-download"/></svg>CSV</button>
         <label class="btn" title="GeoJSON importeren in dit project"><svg><use href="#i-upload"/></svg>Import<input id="importFile" type="file" accept=".geojson,.json,application/geo+json" hidden></label>
@@ -336,9 +338,10 @@
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="vendor/turf/turf.min.js"></script>
-  <script src="js/gate.js?v=20261122d"></script>
-  <script src="js/store.js?v=20261122d"></script>
-  <script src="js/share.js?v=20261122d"></script>
-  <script src="js/app.js?v=20261122d"></script>
+  <script src="js/gate.js?v=20261123a"></script>
+  <script src="js/store.js?v=20261123a"></script>
+  <script src="js/share.js?v=20261123a"></script>
+  <script src="js/plan.js?v=20261123a"></script>
+  <script src="js/app.js?v=20261123a"></script>
 </body>
 </html>
