@@ -39,6 +39,63 @@
     return pdfjsPromise;
   }
 
+  // ------------------------------------------------------------------ Tekstherkenning (OCR) voor plaatjes
+  // Tesseract.js (Apache-2.0) + Nederlands taalmodel, alleen geladen als een PDF een afbeelding is.
+  const TESS_DIR = new URL('vendor/tesseract/', document.baseURI).href;
+  let tessPromise = null;
+  function loadTesseract() {
+    if (global.Tesseract) return Promise.resolve(global.Tesseract);
+    if (!tessPromise) {
+      tessPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = TESS_DIR + 'tesseract.min.js';
+        s.onload = () => resolve(global.Tesseract);
+        s.onerror = () => { tessPromise = null; reject(new Error('De tekstherkenning kon niet worden geladen.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return tessPromise;
+  }
+
+  // Teksten lezen langs de gegeven richtingen (graden, tegen de klok in): het plaatje wordt zo gedraaid dat die
+  // richting horizontaal ligt. Geeft teksten in hetzelfde formaat als extractTexts (pixels van de tekening).
+  async function ocrTexts(canvas, dirs, progress) {
+    const T = await loadTesseract();
+    progress('Tekst in de tekening lezen');
+    const worker = await T.createWorker('nld', 1, { workerPath: TESS_DIR + 'worker.min.js', corePath: TESS_DIR, langPath: TESS_DIR, gzip: true, cacheMethod: 'none', workerBlobURL: false });
+    const out = [];
+    try {
+      await worker.setParameters({ tessedit_pageseg_mode: '11' });     // losse teksten (kaart)
+      for (let d = 0; d < dirs.length; d++) {
+        progress(`Tekst in de tekening lezen (${d + 1}/${dirs.length})`);
+        const th = dirs[d] * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
+        const W = canvas.width, H = canvas.height;
+        const RW = Math.ceil(Math.abs(W * c) + Math.abs(H * s)), RH = Math.ceil(Math.abs(W * s) + Math.abs(H * c));
+        const rc = document.createElement('canvas');
+        rc.width = RW; rc.height = RH;
+        const g = rc.getContext('2d');
+        g.fillStyle = '#fff'; g.fillRect(0, 0, RW, RH);
+        g.translate(RW / 2, RH / 2); g.rotate(th); g.drawImage(canvas, -W / 2, -H / 2);
+        // terug naar de tekening: inverse draaiing om de middens
+        const back = (x, y) => { const dx = x - RW / 2, dy = y - RH / 2; return [c * dx + s * dy + W / 2, -s * dx + c * dy + H / 2]; };
+        const { data } = await worker.recognize(rc);
+        const add = (str, bb, conf) => {
+          str = String(str || '').replace(/\s+/g, ' ').trim();
+          if (conf < 45 || !/[a-z]{3}/i.test(str)) return;
+          const h = bb.y1 - bb.y0;
+          const [x, y] = back((bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2);
+          const [lx, ly] = back(bb.x0, bb.y1);
+          out.push({ str, x, y, left: lx, base: ly, h, ang: -th, ocr: true });
+        };
+        (data.lines || []).forEach(l => add(l.text, l.bbox, l.confidence));
+        (data.words || []).forEach(w => { if (w.text.length >= 5) add(w.text, w.bbox, w.confidence); });
+      }
+    } finally {
+      worker.terminate();
+    }
+    return out;
+  }
+
   // ------------------------------------------------------------------ Geometrie-hulpjes
   const mul = (m, n) => [   // m gevolgd door n (PDF-matrixvolgorde)
     m[0] * n[0] + m[1] * n[2], m[0] * n[1] + m[1] * n[3],
@@ -80,6 +137,7 @@
     const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
     return mx === 0 ? 0 : (mx - mn) / mx;
   }
+  const colorDist = (a, b) => { const p = parseInt(a.slice(1), 16), q = parseInt(b.slice(1), 16); return Math.hypot((p >> 16) - (q >> 16), ((p >> 8) & 255) - ((q >> 8) & 255), (p & 255) - (q & 255)); };
   const lightness = (hex) => { const n = parseInt(hex.slice(1), 16); return (((n >> 16) & 255) + ((n >> 8) & 255) + (n & 255)) / 765; };
 
   // ------------------------------------------------------------------ Vormen uit de PDF halen
@@ -251,9 +309,222 @@
   async function getExtraction() {
     if (!state.extraction) {
       const [ex, texts] = await Promise.all([extractShapes(state.page, state.viewport), extractTexts(state.page, state.viewport)]);
-      state.extraction = { shapes: ex.shapes, lines: ex.lines, texts };
+      // Afbeelding-PDF (scan of plaatje van een kaart): geen tekst en (bijna) geen lijnen → uit de pixels halen
+      if (!texts.length && ex.lines.length < 30) {
+        await tick();
+        const raster = rasterAnalyse(state.canvas);
+        state.extraction = { shapes: raster.shapes, lines: [], texts, raster };
+      } else state.extraction = { shapes: ex.shapes, lines: ex.lines, texts };
     }
     return state.extraction;
+  }
+
+  // ------------------------------------------------------------------ Afbeelding-PDF
+  // Lijnen (met richting) en vlakken uit de pixels halen. Werkt op halve resolutie.
+  // pts: [x, y, hoek°] in pixels van de tekening (hoek met y omhoog); shapes: zoals extractShapes.
+  function rasterAnalyse(canvas) {
+    const F = 2;
+    const W = Math.floor(canvas.width / F), H = Math.floor(canvas.height / F), N = W * H;
+    const small = document.createElement('canvas');
+    small.width = W; small.height = H;
+    const sc = small.getContext('2d', { willReadFrequently: true });
+    sc.drawImage(canvas, 0, 0, W, H);
+    const px = sc.getImageData(0, 0, W, H).data;
+    const gray = new Uint8Array(N), sat = new Uint8Array(N), hueBin = new Uint8Array(N);
+    for (let i = 0, j = 0; i < N; i++, j += 4) {
+      const r = px[j], g = px[j + 1], b = px[j + 2];
+      const mx = r > g ? (r > b ? r : b) : (g > b ? g : b), mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+      gray[i] = (r + g + b) / 3; sat[i] = mx - mn;
+      let h = 0;
+      if (mx !== mn) {
+        if (mx === r) h = ((g - b) / (mx - mn) + 6) % 6; else if (mx === g) h = (b - r) / (mx - mn) + 2; else h = (r - g) / (mx - mn) + 4;
+      }
+      hueBin[i] = Math.floor(((h * 60 + 15) % 360) / 30);       // 12 kleurgroepen, rood rond 0
+    }
+    const isLine = (i) => sat[i] < 45 && gray[i] < 215 && gray[i] >= 70;   // grijze/zwarte kaartlijnen (geen kleur, geen zwarte kaders)
+
+    // --- lijnpunten met richting (structuurtensor), één per cel van 4×4
+    const pts = [];
+    const C = 4, RW = 3;
+    for (let cy = RW + 1; cy < H - RW - 1; cy += C) for (let cx = RW + 1; cx < W - RW - 1; cx += C) {
+      let bi = -1, bg = 256;
+      for (let y = cy; y < cy + C && y < H - RW - 1; y++) for (let x = cx; x < cx + C && x < W - RW - 1; x++) {
+        const i = y * W + x; if (isLine(i) && gray[i] < bg) { bg = gray[i]; bi = i; }
+      }
+      if (bi < 0) continue;
+      const x0 = bi % W, y0 = (bi / W) | 0;
+      let sxx = 0, syy = 0, sxy = 0;
+      for (let y = y0 - RW; y <= y0 + RW; y++) for (let x = x0 - RW; x <= x0 + RW; x++) {
+        const i = y * W + x;
+        const gx = (gray[i - W + 1] + 2 * gray[i + 1] + gray[i + W + 1]) - (gray[i - W - 1] + 2 * gray[i - 1] + gray[i + W - 1]);
+        const gy = (gray[i + W - 1] + 2 * gray[i + W] + gray[i + W + 1]) - (gray[i - W - 1] + 2 * gray[i - W] + gray[i - W + 1]);
+        sxx += gx * gx; syy += gy * gy; sxy += gx * gy;
+      }
+      const tr = sxx + syy;
+      if (tr < 1) continue;
+      const coh = Math.sqrt((sxx - syy) * (sxx - syy) + 4 * sxy * sxy) / tr;
+      if (coh < 0.6) continue;                                   // bochten, symbolen en letters overslaan
+      const tg = 0.5 * Math.atan2(2 * sxy, sxx - syy);           // richting van de helling (beeld, y omlaag)
+      // alleen doorlopende rechte lijnen: ook 3 en 6 pixels verderop (beide kanten) moet de lijn er zijn
+      const ux = -Math.sin(tg), uy = Math.cos(tg);
+      let ok = true;
+      for (const t of [-6, -3, 3, 6]) {
+        const qx = Math.round(x0 + ux * t), qy = Math.round(y0 + uy * t);
+        if (qx < 1 || qy < 1 || qx >= W - 1 || qy >= H - 1) { ok = false; break; }
+        let hit = false;
+        for (let e = -1; e <= 1 && !hit; e++) {
+          const i = Math.round(qy + ux * e) * W + Math.round(qx - uy * e);
+          if (isLine(i)) hit = true;
+        }
+        if (!hit) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const ang = -(tg + Math.PI / 2) * 180 / Math.PI;           // lijnrichting, y omhoog
+      pts.push([(x0 + 0.5) * F, (y0 + 0.5) * F, ang]);
+    }
+
+    // --- vlakken: per kleur (en zwart voor gestippelde kaders) gaten dichten, vullen en omtrek volgen
+    const box = (M, R, erode) => {
+      const T = new Uint8Array(N), O = new Uint8Array(N), full = 2 * R + 1;
+      for (let y = 0; y < H; y++) {
+        let c = 0; const o = y * W;
+        for (let x = -R; x < W; x++) {
+          if (x + R < W) c += M[o + x + R]; else if (erode) c += 0;
+          if (x - R - 1 >= 0) c -= M[o + x - R - 1];
+          if (x >= 0) T[o + x] = erode ? (c === Math.min(full, Math.min(x + R, W - 1) - Math.max(0, x - R) + 1) ? 1 : 0) : (c > 0 ? 1 : 0);
+        }
+      }
+      for (let x = 0; x < W; x++) {
+        let c = 0;
+        for (let y = -R; y < H; y++) {
+          if (y + R < H) c += T[(y + R) * W + x];
+          if (y - R - 1 >= 0) c -= T[(y - R - 1) * W + x];
+          if (y >= 0) O[y * W + x] = erode ? (c === Math.min(y + R, H - 1) - Math.max(0, y - R) + 1 ? 1 : 0) : (c > 0 ? 1 : 0);
+        }
+      }
+      return O;
+    };
+    const fillHoles = (M) => {
+      const out = new Uint8Array(N), st = [];
+      const push = (i) => { if (!M[i] && !out[i]) { out[i] = 1; st.push(i); } };
+      for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
+      for (let y = 0; y < H; y++) { push(y * W); push(y * W + W - 1); }
+      while (st.length) {
+        const i = st.pop(), x = i % W;
+        if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (i >= W) push(i - W); if (i < N - W) push(i + W);
+      }
+      for (let i = 0; i < N; i++) out[i] = out[i] ? 0 : 1;
+      return out;
+    };
+    const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+    const trace = (lab, id, start) => {
+      const inside = (x, y) => x >= 0 && y >= 0 && x < W && y < H && lab[y * W + x] === id;
+      let x = start % W, y = (start / W) | 0, d = 0, first = -1;
+      const sx = x, sy = y, out = [[x, y]];
+      for (let guard = 0; guard < 4 * N; guard++) {
+        let nd = -1;
+        for (let k = 0; k < 8; k++) { const dd = (d + 5 + k) % 8; if (inside(x + DIRS[dd][0], y + DIRS[dd][1])) { nd = dd; break; } }
+        if (nd < 0) break;
+        if (x === sx && y === sy && first === nd && out.length > 2) break;
+        if (first < 0) first = nd;
+        x += DIRS[nd][0]; y += DIRS[nd][1]; d = nd;
+        out.push([x, y]);
+      }
+      return out;
+    };
+    const simplify = (P, tol) => {
+      if (P.length < 4) return P;
+      const keep = new Uint8Array(P.length); keep[0] = keep[P.length - 1] = 1;
+      const st = [[0, P.length - 1]];
+      while (st.length) {
+        const [a, b] = st.pop();
+        let md = 0, mi = -1;
+        const [x0, y0] = P[a], [x1, y1] = P[b], dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy) || 1;
+        for (let i = a + 1; i < b; i++) { const dd = Math.abs((P[i][0] - x0) * dy - (P[i][1] - y0) * dx) / L; if (dd > md) { md = dd; mi = i; } }
+        if (md > tol) { keep[mi] = 1; st.push([a, mi], [mi, b]); }
+      }
+      return P.filter((_, i) => keep[i]);
+    };
+    const classes = [];
+    const counts = new Array(12).fill(0);
+    for (let i = 0; i < N; i++) if (sat[i] > 50) counts[hueBin[i]]++;
+    counts.forEach((c, b) => { if (c > N * 0.0005) classes.push({ test: (i) => sat[i] > 50 && hueBin[i] === b }); });
+    classes.push({ test: (i) => gray[i] < 80 && sat[i] < 45, black: true });
+    // --- stippen (bomen): kleine, ronde, sterk gekleurde vlekjes
+    const dots = [];
+    {
+      const seenD = new Uint8Array(N);
+      for (let s0 = 0; s0 < N; s0++) {
+        if (seenD[s0] || sat[s0] < 120) continue;
+        const hb = hueBin[s0];
+        const st = [s0]; seenD[s0] = 1;
+        let area = 0, x0 = W, y0 = H, x1 = 0, y1 = 0, sx = 0, sy = 0, cr = 0, cg = 0, cb = 0;
+        while (st.length) {
+          const i = st.pop(), x = i % W, y = (i / W) | 0;
+          area++; sx += x; sy += y; cr += px[i * 4]; cg += px[i * 4 + 1]; cb += px[i * 4 + 2];
+          if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+          for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) {
+            if (j >= 0 && j < N && !seenD[j] && sat[j] >= 120 && hueBin[j] === hb) { seenD[j] = 1; st.push(j); }
+          }
+        }
+        const w = x1 - x0 + 1, h = y1 - y0 + 1;
+        if (w < 10 || h < 10 || w > 60 || h > 60 || Math.max(w, h) / Math.min(w, h) > 1.3) continue;
+        const fillR = area / (w * h);
+        if (fillR < 0.65 || fillR > 0.9) continue;                 // een vol rondje (geen letter o, geen streepje)
+        dots.push({ pt: [(sx / area + 0.5) * F, (sy / area + 0.5) * F], d: (w + h) / 2 * F, color: hexOf([cr / area / 255, cg / area / 255, cb / area / 255]) });
+      }
+    }
+    const shapes = [];
+    const R = 5, RIN = 12;
+    for (const cl of classes) {
+      const M = new Uint8Array(N);
+      let any = 0;
+      for (let i = 0; i < N; i++) if (cl.test(i)) { M[i] = 1; any++; }
+      if (any < N * 0.0005) continue;
+      // dichten (stippellijnen), vullen, en dunne uitsteeksels (labels, aanwijslijnen) eraf
+      const E = box(box(fillHoles(box(M, R, false)), R + 8, true), 8, false);
+      const core = box(E, RIN, true);                          // dunne dingen (tekst, lijnen) vallen hier af
+      const lab = new Int32Array(N);
+      let id = 0;
+      for (let s0 = 0; s0 < N; s0++) {
+        if (!E[s0] || lab[s0]) continue;
+        id++;
+        const st = [s0]; lab[s0] = id;
+        let area = 0, onM = 0, hasCore = false; const hist = new Map();
+        while (st.length) {
+          const i = st.pop(); area++;
+          if (core[i]) hasCore = true;
+          if (M[i]) {
+            onM++;
+            const j = i * 4, k = ((px[j] >> 4) << 8) | ((px[j + 1] >> 4) << 4) | (px[j + 2] >> 4);
+            hist.set(k, (hist.get(k) || 0) + 1);
+          }
+          const x = i % W;
+          if (x > 0 && E[i - 1] && !lab[i - 1]) { lab[i - 1] = id; st.push(i - 1); }
+          if (x < W - 1 && E[i + 1] && !lab[i + 1]) { lab[i + 1] = id; st.push(i + 1); }
+          if (i >= W && E[i - W] && !lab[i - W]) { lab[i - W] = id; st.push(i - W); }
+          if (i < N - W && E[i + W] && !lab[i + W]) { lab[i + W] = id; st.push(i + W); }
+        }
+        if (area < N * 0.001 || area > N * 0.6 || !hasCore) continue;
+        // gesloten omtrek: in twee helften vereenvoudigen (begin = eind)
+        const P = trace(lab, id, s0);
+        if (P.length > 2 && P[P.length - 1][0] === P[0][0] && P[P.length - 1][1] === P[0][1]) P.pop();
+        let far = 0, fd = -1;
+        P.forEach(([x, y], k) => { const dd = (x - P[0][0]) ** 2 + (y - P[0][1]) ** 2; if (dd > fd) { fd = dd; far = k; } });
+        const ring = [...simplify(P.slice(0, far + 1), 2).slice(0, -1), ...simplify([...P.slice(far), P[0]], 2).slice(0, -1)]
+          .map(([x, y]) => [(x + 0.5) * F, (y + 0.5) * F]);
+        if (ring.length < 3) continue;
+        const fillish = onM / area > 0.4;
+        let color = '#000000';
+        if (!cl.black) {
+          const k = [...hist.entries()].sort((a, b) => b[1] - a[1])[0][0];
+          color = hexOf([((k >> 8) & 15) * 17 / 255, ((k >> 4) & 15) * 17 / 255, (k & 15) * 17 / 255]);
+        }
+        shapes.push({ outer: ring, holes: [], rect: false, kind: fillish && !cl.black ? 'fill' : 'outline', color, area: ringArea(ring) });
+      }
+    }
+    global.__rasterDbg = { pts, dots, shapes: shapes.map(x => ({ kind: x.kind, color: x.color, n: x.outer.length, area: Math.round(x.area), ring: x.outer })) };
+    return { pts, shapes, dots };
   }
 
   // Vormen opschonen, groeperen per kleur, namen zoeken in legenda en vakken
@@ -368,6 +639,21 @@
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([n]) => +n);
   }
 
+  // Gelezen tekst (OCR) mag een letter of twee afwijken: "Rijgersbor" = "Rijgersborgh", "omwijckerpad" = "Blomwijckerpad"
+  function ocrLike(q, sn) {
+    if (q.length < 6) return false;
+    if (sn.startsWith(q) || sn.endsWith(q)) return q.length >= sn.length - 3;
+    const n = q.length, m = sn.length;
+    if (Math.abs(n - m) > 2) return false;
+    let prev = Array.from({ length: m + 1 }, (_, j) => j);
+    for (let i = 1; i <= n; i++) {
+      const cur = [i];
+      for (let j = 1; j <= m; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (q[i - 1] === sn[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[m] <= (m >= 10 ? 2 : 1);
+  }
+
   async function findStreets(texts, progress) {
     // Kandidaten: elke tekst (ook kleine, bijv. het adres in het titelblok) én de straatnaam binnen een
     // langere regel ("Locatie: Drusiushof 1 t/m 5, 1069 Amsterdam" → "Drusiushof").
@@ -421,7 +707,7 @@
         }))).flat();
         docs.forEach(doc => {
           const sn = compact(doc.straatnaam);
-          if (sn && (q === sn || (q.startsWith(sn) && /^\d/.test(q.slice(sn.length))))) {
+          if (sn && (q === sn || (q.startsWith(sn) && /^\d/.test(q.slice(sn.length))) || (t.ocr && ocrLike(q, sn)))) {
             const m = /POINT\(([-\d.]+) ([-\d.]+)\)/.exec(doc.centroide_ll || '');
             if (m) matches.push({ street: doc.straatnaam, place: doc.woonplaatsnaam, gemeente: doc.gemeentenaam, ll: [+m[2], +m[1]] });
             if (!labelTexts.includes(t)) { t.streetName = doc.straatnaam; t.streetLL = [+m[2], +m[1]]; labelTexts.push(t); }
@@ -679,14 +965,34 @@
     const doc = docs.find(d => norm(d.straatnaam).replace(/ /g, '') === want) || docs[0];
     const m = doc && /POINT\(([-\d.]+) ([-\d.]+)\)/.exec(doc.centroide_ll || '');
     if (!m) return null;
-    return { center: [+m[2], +m[1]], place: doc.woonplaatsnaam, streets: [doc.straatnaam], labelTexts: [] };
+    // adressen langs de straat: bij een lange straat ligt het midden soms ver van het plan
+    let along = [];
+    try {
+      const u2 = `${LS}?rows=100&fq=type:adres&fq=gemeentenaam:${encodeURIComponent(GEMEENTE)}&fl=straatnaam,centroide_ll&q=${encodeURIComponent('straatnaam:"' + doc.straatnaam + '"')}`;
+      along = ((await (await fetch(u2)).json()).response?.docs || [])
+        .filter(d => d.straatnaam === doc.straatnaam)
+        .map(d => /POINT\(([-\d.]+) ([-\d.]+)\)/.exec(d.centroide_ll || '')).filter(Boolean).map(q => [+q[2], +q[1]]);
+    } catch (e) { /* alleen het midden */ }
+    return { center: [+m[2], +m[1]], place: doc.woonplaatsnaam, streets: [doc.straatnaam], labelTexts: [], along };
   }
 
   async function autoPlace(progress, opts = {}) {
-    const { lines, texts } = await getExtraction();
+    const { lines, texts, raster } = await getExtraction();
     const W = state.canvas.width, H = state.canvas.height;
     const scales = findScales(texts);
     progress('Straatnamen zoeken');
+    // Plaatje: straatnamen lezen met tekstherkenning, langs de twee hoofdrichtingen van de kaart
+    if (raster && !texts.length && !raster.ocrDone) {
+      raster.ocrDone = true;
+      try {
+        const segs = raster.pts.map(([x, y, a]) => { const r = a * Math.PI / 180; return [0, 0, Math.cos(r) * 10, Math.sin(r) * 10]; });
+        const d0 = dominantAngle(segs);
+        // leesbare richtingen: ongeveer -100° … +110° (verticale namen lezen meestal van onder naar boven)
+        const dirs = [0, 90, 180, 270].map(k => ((d0 + k + 180) % 360 + 360) % 360 - 180).filter(a => a >= -100 && a <= 110);
+        const read = await ocrTexts(state.canvas, dirs, progress);
+        texts.push(...read);
+      } catch (e) { console.warn('OCR', e); }
+    }
     let loc = texts.length ? await findStreets(texts, progress) : null;
     if (opts.street) {
       progress('Straat opzoeken');
@@ -700,15 +1006,17 @@
     }
     if (!loc) {
       const words = texts.filter(t => /[a-z]{4}/i.test(t.str)).length;
-      throw new Error(words < 5
-        ? 'In deze PDF staat (bijna) geen leesbare tekst: de letters zijn als lijnen getekend of het is een scan. Vul de straatnaam hieronder in.'
+      throw new Error(raster
+        ? 'Deze PDF is een afbeelding (scan of plaatje); er kon geen straatnaam uit gelezen worden. Vul de straatnaam hieronder in.'
+        : words < 5
+        ? 'In deze PDF staat (bijna) geen leesbare tekst: de letters zijn als lijnen getekend. Vul de straatnaam hieronder in.'
         : 'Er is geen straatnaam op het plan gevonden die bij PDOK in Amsterdam bekend is.');
     }
     state.streetNames = new Set(loc.streets.map(t => norm(t).replace(/ /g, '')));
     // De schaal op het plan klopt niet altijd ("Ntb", passend afgedrukt): een reeks schalen proberen en
     // daarna traploos bijstellen. Schalen uit de tekst gaan voorop.
     const series = [];
-    for (let n = 150; n <= 1100; n *= 1.14) series.push(Math.round(n));
+    for (let n = raster ? 400 : 150; n <= (raster ? 3000 : 1100); n *= 1.14) series.push(Math.round(n));   // een plaatje is vaak een overzichtskaart
     let tryScales = [...new Set([...scales.slice(0, 2), ...series])];
     if (global.__planForce?.scales) tryScales = global.__planForce.scales;
     const mppOf = (n) => n * PT_M / state.scale;
@@ -766,8 +1074,18 @@
     const addStart = (ll) => { if (ll && !startPoints.some(c => Math.hypot((c[0] - ll[0]) * 111, (c[1] - ll[1]) * 68) < 0.15)) startPoints.push(ll); };
     if (loc.manual) {
       // straat zelf opgegeven: ook een stukje rond het midden van de straat proberen (lange straten)
+      // adressen langs de straat, verspreid (minstens ±250 m uit elkaar); anders een kring rond het midden
+      const spread = [];
+      const al = loc.along || [];
+      if (al.length >= 5) {
+        // waar de meeste adressen liggen eerst proberen (het midden van de straatlijn kan in een park of plas liggen)
+        const med = (arr) => arr.slice().sort((a, b) => a - b)[Math.floor(arr.length / 2)];
+        startPoints.unshift([med(al.map(p => p[0])), med(al.map(p => p[1]))]);
+      }
+      al.forEach(p => { if ([loc.center, ...spread].every(q => Math.hypot((q[0] - p[0]) * 111, (q[1] - p[1]) * 68) > 0.25)) spread.push(p); });
+      spread.forEach(addStart);
       const [la, ln] = loc.center;
-      [[0.0025, 0], [-0.0025, 0], [0, 0.004], [0, -0.004]].forEach(([dy, dx]) => addStart([la + dy, ln + dx]));
+      if (!spread.length) [[0.0025, 0], [-0.0025, 0], [0, 0.004], [0, -0.004]].forEach(([dy, dx]) => addStart([la + dy, ln + dx]));
     } else if (loc.source !== 'situatiekaartje') {
       drawLabels.forEach(t => addStart(t.streetLL));
       sheetLabels.forEach(t => addStart(t.streetLL));
@@ -817,6 +1135,12 @@
           for (let s5 = 0; s5 < n; s5++) upts.push([x0 + (x1 - x0) * s5 / n, y0 + (y1 - y0) * s5 / n, ang]);
         }
       });
+      if (raster) raster.pts.forEach(([x, y, ang]) => {
+        if (!inB(drawArea, x, y)) return;
+        const X = x - W / 2, Y = -(y - H / 2), a = ang * Math.PI / 180;
+        upts.push([X, Y, ang]);
+        usegs.push([X - Math.cos(a) * 4, Y - Math.sin(a) * 4, X + Math.cos(a) * 4, Y + Math.sin(a) * 4]);
+      });
       if (upts.length < 50) throw new Error('Er staat te weinig ondergrond in de tekening om hem automatisch te plaatsen.');
       const pick = (n) => { const out = []; const step = upts.length / n; for (let i = 0; i < n && i * step < upts.length; i++) out.push(upts[Math.floor(i * step)]); return out; };
       const coarse = pick(200), fine = pick(1500);
@@ -833,7 +1157,7 @@
       const sDom = dominantAngle(usegs);
       const angDiff = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180);
       let rots = [];
-      for (let k = 0; k < 4; k++) for (const f of [-1, 0, 1]) rots.push(tDom - sDom + k * 90 + f);
+      for (let k = 0; k < 4; k++) for (const f of (raster ? [0] : [-1, 0, 1])) rots.push(tDom - sDom + k * 90 + f);
       if (labelRots.length) {
         // richtingen waar de meeste straatnamen het over eens zijn (per 180°), de beste twee
         const base = labelRots.filter((_, i) => i % 2 === 0);
@@ -857,10 +1181,15 @@
       const rx = new Float64Array(n), ry = new Float64Array(n), rb = new Uint8Array(n);
       const span = prior ? 150 : Math.max(40, Math.min(R * 0.8, 300));
       const [ox, oy] = prior || [0, 0];
-      const TOL = 4, STEP = 4;
+      // Bij een plaatje (overzichtskaart) schalen de marges mee met de schaal: anders wint een te kleine
+      // schaal, omdat een verkleinde tekening altijd wel ergens op dichte BGT-lijnen valt.
+      const fS = (m) => raster ? m / mppOf(800) : 1;
       let cands = [], floor = 0.15, combo = 0;
+      const perScale = [];
       for (const scaleN of tryScales) {
         const m = mppOf(scaleN);
+        if (raster) { cands = []; floor = 0.15; }     // elke schaal eigen kandidaten (eerlijke kans)
+        const TOL = raster ? Math.min(5, Math.max(1.5, 2 * fS(m))) : 4, STEP = raster ? Math.min(4, Math.max(2, TOL)) : 4;
         for (const rot of rots) {
           if (combo++ % 6 === 0) { progress(`Tekening op de ondergrond passen (${Math.round(combo / (tryScales.length * rots.length) * 100)}%)`); await tick(); }
           const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
@@ -876,7 +1205,18 @@
             if (sc > floor) { cands.push({ rot, tx, ty, m, scaleN, sc }); if (cands.length > 400) { cands.sort((a, b) => b.sc - a.sc); cands.length = 30; floor = Math.max(floor, cands[29].sc); } }
           }
         }
+        if (raster) {
+          cands.sort((a, b) => b.sc - a.sc);
+          const mine = [];
+          for (const c0 of cands) {
+            if (mine.some(q => Math.abs(q.rot - c0.rot) < 3 && Math.hypot(q.tx - c0.tx, q.ty - c0.ty) < 40)) continue;
+            mine.push(c0);
+            if (mine.length >= 3) break;
+          }
+          perScale.push(...mine);
+        }
       }
+      if (raster) cands = perScale;
       cands.sort((a, b) => b.sc - a.sc);
       dbg.cands = cands.slice(0, 8).map(c => [Math.round(c.rot), c.scaleN, Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
 
@@ -888,17 +1228,18 @@
       for (const c0 of cands) {
         if (seen0.some(q => Math.abs(q.rot - c0.rot) < 3 && Math.abs(q.m / c0.m - 1) < 0.1 && Math.hypot(q.tx - c0.tx, q.ty - c0.ty) < 15)) continue;
         seen0.push(c0);
-        if (seen0.length > 5) break;
+        if (seen0.length > (raster ? 60 : 5)) break;
         let bestL = { ...c0, sc: 0 };
+        const f0 = fS(c0.m), T2 = raster ? Math.max(1, f0) : 2, PS = 1.5 * Math.max(0.5, Math.min(3, f0)), PW = 12 * Math.max(0.5, Math.min(3, f0));
         for (let ds = -0.12; ds <= 0.1201; ds += 0.02) for (let dr = -2; dr <= 2.01; dr += 0.5) {
           const m = c0.m * (1 + ds), rot = c0.rot + dr;
           const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
           for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
-          for (let ty = c0.ty - 12; ty <= c0.ty + 12; ty += 1.5) for (let tx = c0.tx - 12; tx <= c0.tx + 12; tx += 1.5) {
+          for (let ty = c0.ty - PW; ty <= c0.ty + PW; ty += PS) for (let tx = c0.tx - PW; tx <= c0.tx + PW; tx += PS) {
             let sc = 0;
             for (let k = 0; k < n; k++) {
               const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
-              if (i >= 0 && j >= 0 && i < size && j < size) { const dd = fields[rb[k]][j * size + i]; if (dd < 2) sc += 1 - dd / 2; }
+              if (i >= 0 && j >= 0 && i < size && j < size) { const dd = fields[rb[k]][j * size + i]; if (dd < T2) sc += 1 - dd / T2; }
             }
             sc /= n;
             if (sc > bestL.sc) bestL = { rot, tx, ty, m, sc };
@@ -914,14 +1255,15 @@
       const segsByBin = Array.from({ length: NBIN }, () => []);
       tSegs.forEach(sg => { const b = binOf(Math.atan2(sg[3] - sg[1], sg[2] - sg[0]) * 180 / Math.PI); for (const bb of [(b + NBIN - 1) % NBIN, b, (b + 1) % NBIN]) segsByBin[bb].push(sg); });
       const exactBin = segsByBin.map(list => segmentIndex(list, 1.5));
-      const scoreExact = (p, tol) => {
+      const scoreExact = (p, tol, pts = fine) => {
+        tol *= fS(p.m);
         const c = Math.cos(p.rot * Math.PI / 180), s3 = Math.sin(p.rot * Math.PI / 180);
         let sc = 0;
-        for (const [x, y, a] of fine) {
+        for (const [x, y, a] of pts) {
           const dd = exactBin[binOf(a + p.rot)]((c * x - s3 * y) * p.m + p.tx, (s3 * x + c * y) * p.m + p.ty, tol);
           if (dd < tol) sc += 1 - dd / tol;
         }
-        return sc / fine.length;
+        return sc / pts.length;
       };
       // Snelle score op de afstandskaarten (1 m) voor de grove rondes
       const mid = pick(600);
@@ -937,14 +1279,17 @@
         return sc / mid.length;
       };
       const STAGES = [[2, 0.5, 0.02, 3, scoreExact], [1, 0.25, 0.01, 2, scoreExact], [0.5, 0.1, 0.005, 1.2, scoreExact], [0.2, 0.04, 0.002, 0.8, scoreExact], [0.08, 0.015, 0.001, 0.5, scoreExact], [0.03, 0.006, 0.0005, 0.35, scoreExact]];
+      const mMin = mppOf(Math.min(...tryScales) * 0.8), mMax = mppOf(Math.max(...tryScales) * 1.25);
       const climb = (cur, [stepT, stepR, stepS, tol, score]) => {
         cur = { ...cur, sc: score(cur, tol) };
+        if (raster) stepT *= Math.max(0.3, Math.min(3, fS(cur.m)));
         let improved = true, guard = 0;
         while (improved && guard++ < 40) {
           improved = false;
           for (const [dx, dy, dr, ds] of [[stepT, 0, 0, 0], [-stepT, 0, 0, 0], [0, stepT, 0, 0], [0, -stepT, 0, 0], [0, 0, stepR, 0], [0, 0, -stepR, 0], [0, 0, 0, stepS], [0, 0, 0, -stepS]]) {
             // schaal rond het midden van de tekening aanpassen: verschuiving blijft gelijk
             const nx = { ...cur, tx: cur.tx + dx, ty: cur.ty + dy, rot: cur.rot + dr, m: cur.m * (1 + ds) };
+            if (nx.m < mMin || nx.m > mMax) continue;      // niet weglopen naar een onzinnige schaal
             const sc = score(nx, tol);
             if (sc > cur.sc + 1e-6) { cur = { ...nx, sc }; improved = true; }
           }
@@ -955,11 +1300,12 @@
       for (const c0 of cands) {
         if (seenC.some(q => Math.abs(q.rot - c0.rot) < 2 && Math.abs(q.m / c0.m - 1) < 0.06 && Math.hypot(q.tx - c0.tx, q.ty - c0.ty) < 8)) continue;
         seenC.push(c0);
-        if (seenC.length >= 6) break;
+        if (seenC.length >= (raster ? 12 : 6)) break;
       }
       progress('Passing verfijnen');
       await tick();
-      const ranked = seenC.map(c0 => climb(c0, STAGES[0])).sort((a, b) => b.sc - a.sc);
+      const first = raster ? [2, 0.5, 0.02, 3, (p, tol) => scoreExact(p, tol, mid)] : STAGES[0];   // plaatje: veel kandidaten, eerst met minder punten
+      const ranked = seenC.map(c0 => climb(c0, first)).sort((a, b) => b.sc - a.sc);
       // Bijna gelijkspel (symmetrische wijk)? Dan de draaiing die het best past bij de stand van het situatiekaartje
       if (loc.insetRot != null && ranked.length > 1) {
         const close = ranked.filter(c => c.sc >= ranked[0].sc * 0.95);
@@ -974,8 +1320,20 @@
       if (ranked[0]) {
         let cur = ranked[0];
         for (const st of STAGES.slice(1)) { cur = climb(cur, st); await tick(); }
+        if (raster) {
+          // plaatje: veel evenwijdige lijnen → kleine lokale optima; vanuit iets andere draaiing/schaal opnieuw verfijnen
+          let top = cur;
+          for (const [dr, ds] of [[-1, 0], [1, 0], [-0.5, -0.015], [0.5, 0.015], [-0.5, 0.015], [0.5, -0.015]]) {
+            let c2 = { ...cur, rot: cur.rot + dr, m: cur.m * (1 + ds) };
+            for (const st of STAGES.slice(3)) c2 = climb(c2, st);
+            if (c2.sc > top.sc) top = c2;
+            await tick();
+          }
+          cur = top;
+        }
         const c = Math.cos(cur.rot * Math.PI / 180), s4 = Math.sin(cur.rot * Math.PI / 180);
-        const fit = fine.filter(([x, y, a]) => exactBin[binOf(a + cur.rot)]((c * x - s4 * y) * cur.m + cur.tx, (s4 * x + c * y) * cur.m + cur.ty, 1) < 0.5).length / fine.length;
+        const fTol = 0.5 * fS(cur.m);
+        const fit = fine.filter(([x, y, a]) => exactBin[binOf(a + cur.rot)]((c * x - s4 * y) * cur.m + cur.tx, (s4 * x + c * y) * cur.m + cur.ty, Math.max(1, fTol * 2)) < fTol).length / fine.length;
         best = { ...cur, fit, mpp: cur.m, scaleN: Math.round(cur.m / PT_M * state.scale) };
         dbg.ranked = ranked.map(c => [+c.rot.toFixed(1), Math.round(c.m / PT_M * state.scale), Math.round(c.tx), Math.round(c.ty), +c.sc.toFixed(3)]);
       }
@@ -988,6 +1346,7 @@
       if (i > 0) progress(`Andere plek proberen (${i + 1}/${nTry})`);
       let res;
       try { res = await attemptAt(); } catch (err) { lastErr = err; continue; }
+      (global.__planAttempts = i ? global.__planAttempts || [] : []).push(res.best && { center: loc.center, fit: +res.best.fit.toFixed(3), scaleN: res.best.scaleN, rot: +res.best.rot.toFixed(1), tx: Math.round(res.best.tx), ty: Math.round(res.best.ty), cands: global.__planDebug?.cands?.slice(0, 4), fine: global.__planDebug?.fineCands?.slice(0, 4) });
       if (res.best && (!best || res.best.fit > best.fit)) { best = res.best; target = res.target; bestCenter = loc.center; }
       if (best && best.fit >= 0.55) break;
     }
@@ -1099,7 +1458,7 @@
         <span>Of sleep het bestand hierheen. Het bestand blijft op je eigen apparaat.</span>
         <input type="file" id="planFile" accept="application/pdf,.pdf" hidden>
       </label>
-      <p class="plan-hint">Het beste resultaat geeft een PDF die rechtstreeks uit AutoCAD, Vectorworks of een ander tekenprogramma komt. Bij een scan worden geen vakken herkend; de tekening komt dan als achtergrond op de kaart, zodat je de vakken kunt overtekenen.</p>
+      <p class="plan-hint">Het beste resultaat geeft een PDF die rechtstreeks uit AutoCAD, Vectorworks of een ander tekenprogramma komt. Is de PDF een plaatje (scan of kaartafbeelding), dan leest de tool de straatnamen met tekstherkenning en haalt hij gekleurde en gestippelde vlakken en stippen (bomen) uit het beeld; dat duurt ongeveer een minuut.</p>
       <p class="plan-error" id="planError"></p>`;
     const input = body.querySelector('#planFile');
     input.addEventListener('change', () => input.files[0] && loadFile(input.files[0]));
@@ -1371,8 +1730,18 @@
     body.innerHTML = '<p class="plan-instr">Vlakken zoeken in de tekening…</p>';
     if (!state.groups) {
       try {
-        const { shapes, texts } = await getExtraction();
+        const { shapes, texts, raster } = await getExtraction();
         state.groups = analyse(shapes, texts, state.canvas.width, state.canvas.height);
+        // stippen uit een plaatje: bomen (per kleur één groep)
+        const byColor = new Map();
+        (raster?.dots || []).forEach(d => {
+          const k = [...byColor.keys()].find(c => colorDist(c, d.color) < 60) || d.color;
+          if (!byColor.has(k)) byColor.set(k, []);
+          byColor.get(k).push(d);
+        });
+        byColor.forEach((items, color) => {
+          if (items.length) state.groups.unshift({ key: 'point:' + color, kind: 'point', color, items, name: 'Bomen', checked: true, pxArea: 0 });
+        });
         global.__planGroups = state.groups;
       } catch (e) {
         console.error(e);
@@ -1388,10 +1757,11 @@
     const m2PerPx2 = t.metresPerPx * t.metresPerPx;
     const groups = state.groups;
     // groepen met alleen piepkleine vlakjes (getekende letters, pijlpunten) standaard uit
-    groups.forEach(g => { if (g.checked && g.pxArea * m2PerPx2 / g.items.length < 1) g.checked = false; });
+    groups.forEach(g => { if (g.checked && g.kind !== 'point' && g.pxArea * m2PerPx2 / g.items.length < 1) g.checked = false; });
     let idx = 0;
     let idxO = 0, idxG = 0;
     groups.forEach(g => {
+      if (g.kind === 'point') return;
       if (g.kind === 'outline') g.name = g.name ? `Omtrek ${g.name}` : `Omtrek ${++idxO}`;
       else if (!g.name) g.name = saturation(g.color) > 0.12 ? `Beplanting ${++idx}` : `Overig vlak ${++idxG}`;
     });
@@ -1410,7 +1780,7 @@
 
     body.innerHTML = `
       <p class="plan-instr">Gevonden vlakken, gegroepeerd per kleur. Vink aan wat je wilt overnemen en geef elke groep de naam van de beplanting.${groups.some(g => g.legendName) ? ' Namen uit de legenda zijn al ingevuld.' : ''}</p>
-      <ul class="plan-groups" id="planGroups">${groups.map((g, i) => g.kind === 'fill' ? groupHtml(g, i) : '').join('')}</ul>
+      <ul class="plan-groups" id="planGroups">${groups.map((g, i) => g.kind !== 'outline' ? groupHtml(g, i) : '').join('')}</ul>
       ${groups.some(g => g.kind === 'outline') ? `<details class="plan-more" ${groups.every(g => g.kind === 'outline') ? 'open' : ''}>
         <summary>Alleen omtrekken (${groups.filter(g => g.kind === 'outline').length} groepen)</summary>
         <p class="plan-hint">Lijnen zonder vulling, zoals randen van vakken, gebouwen en kaders. Meestal niet nodig als de vakken hierboven al gevuld zijn.</p>
@@ -1425,7 +1795,11 @@
     const list = body;
     const btn = body.querySelector('#planImport');
     const count = () => groups.filter(g => g.checked).reduce((n, g) => n + g.items.length, 0);
-    const refresh = () => { const n = count(); btn.textContent = `${n} ${n === 1 ? 'vak' : 'vakken'} importeren`; btn.disabled = !n; drawPreview(); };
+    const refresh = () => {
+      const n = count(), pts = groups.filter(g => g.checked && g.kind === 'point').reduce((t, g) => t + g.items.length, 0), v = n - pts;
+      btn.textContent = `${[v ? `${v} ${v === 1 ? 'vak' : 'vakken'}` : '', pts ? `${pts} ${pts === 1 ? 'punt' : 'punten'}` : ''].filter(Boolean).join(' + ') || '0 vakken'} importeren`;
+      btn.disabled = !n; drawPreview();
+    };
     list.addEventListener('change', (e) => {
       const i = e.target.dataset.i;
       if (e.target.type === 'checkbox' && i !== undefined) { groups[i].checked = e.target.checked; e.target.closest('li').classList.toggle('on', e.target.checked); refresh(); }
@@ -1438,7 +1812,26 @@
       // alle vakken uit dit plan horen bij één groep (één regel in de objectenlijst)
       const planGroupId = 'plan-' + Date.now().toString(36);
       const planGroupName = state.file.name.replace(/\.pdf$/i, '').replace(/^\d{6,8}[_ -]*/, '').replace(/[_]+/g, ' ').trim() || 'Beplantingsplan';
-      groups.filter(g => g.checked).forEach(g => g.items.forEach(s => {
+      groups.filter(g => g.checked && g.kind === 'point').forEach(g => g.items.forEach((s, k) => {
+        const ll = t.toLatLng(s.pt[0], s.pt[1]);
+        const tree = /boom|bomen/i.test(g.name);
+        feats.push({
+          shape: 'Marker',
+          geometry: { type: 'Point', coordinates: [+ll.lng.toFixed(7), +ll.lat.toFixed(7)] },
+          props: {
+            name: `${tree ? 'Boom' : (g.name || 'Punt')} ${k + 1}`,
+            kind: 'asset',
+            category: tree ? 'Boom' : 'Overig',
+            status: 'Gepland',
+            ref: '',
+            groupId: planGroupId,
+            group: planGroupName,
+            color: g.color,
+            notes: `Uit beplantingsplan “${state.file.name}”${state.pdf.numPages > 1 ? `, pagina ${state.pageNo}` : ''}.`,
+          },
+        });
+      }));
+      groups.filter(g => g.checked && g.kind !== 'point').forEach(g => g.items.forEach(s => {
         const geometry = { type: 'Polygon', coordinates: [toGeo(s.outer), ...s.holes.map(toGeo)] };
         feats.push({
           shape: 'Polygon',
@@ -1474,6 +1867,10 @@
       clearShapes();
       state.shapeLayer = L.layerGroup().addTo(ctx.map);
       groups.filter(g => g.checked).forEach(g => g.items.forEach(s => {
+        if (g.kind === 'point') {
+          L.circleMarker(t.toLatLng(s.pt[0], s.pt[1]), { radius: 6, color: '#fff', weight: 2, fillColor: g.color, fillOpacity: 1, interactive: false, pmIgnore: true }).addTo(state.shapeLayer);
+          return;
+        }
         L.polygon([s.outer, ...s.holes].map(r => r.map(([x, y]) => t.toLatLng(x, y))), {
           color: g.color, weight: 2, fillColor: g.color, fillOpacity: g.kind === 'outline' ? 0 : 0.45, interactive: false, pmIgnore: true,
         }).addTo(state.shapeLayer);
@@ -1484,13 +1881,15 @@
 
   function groupHtml(g, i) {
     const m2 = g.pxArea * state.transform.metresPerPx * state.transform.metresPerPx;
+    const info = g.kind === 'point' ? `${g.items.length} ${g.items.length === 1 ? 'punt' : 'punten'} · uit de stippen in de tekening`
+      : `${g.items.length} ${g.items.length === 1 ? 'vak' : 'vakken'} · ${fmtArea(m2)}${g.kind === 'outline' ? ' · alleen omtrek' : ''}`;
     return `
         <li class="${g.checked ? 'on' : ''}">
           <input type="checkbox" id="pg${i}" data-i="${i}" ${g.checked ? 'checked' : ''}>
           <label for="pg${i}" class="plan-swatch ${g.kind}" style="--c:${esc(g.color)}"></label>
           <div class="plan-g-main">
             <input type="text" class="plan-g-name" data-i="${i}" value="${esc(g.name)}" aria-label="Naam groep ${i + 1}">
-            <small>${g.items.length} ${g.items.length === 1 ? 'vak' : 'vakken'} · ${fmtArea(m2)}${g.kind === 'outline' ? ' · alleen omtrek' : ''}</small>
+            <small>${info}</small>
           </div>
         </li>`;
   }
@@ -1508,5 +1907,5 @@
     return m2 >= 10000 ? `${nf(m2 / 10000, 2)} ha` : `${nf(m2, 0)} m²`;
   }
 
-  global.PlanImport = { open, _internal: { solveTransform, analyse, extractShapes, extractTexts, findScales } };
+  global.PlanImport = { open, _internal: { solveTransform, analyse, extractShapes, extractTexts, findScales, rasterAnalyse } };
 })(window);
