@@ -1286,6 +1286,10 @@
           <div class="f-sub">${total.length} ${total.length === 1 ? 'vak' : 'vakken'}${q && members.length !== total.length ? ` · ${members.length} gevonden` : ''}</div>
         </span>
         <span class="f-measure">${area ? esc(areaParts(area).slice(0, 2).join(' ')) : ''}</span>
+        <span class="g-actions">
+          <button type="button" class="icon-btn g-edit" title="Alle vakken in één keer bewerken" aria-label="Groep bewerken">${icon('i-edit')}</button>
+          <button type="button" class="icon-btn danger g-del" title="Alle vakken van deze groep verwijderen" aria-label="Groep verwijderen">${icon('i-trash')}</button>
+        </span>
       </li>`;
       if (open) html += members.map(m => rowHtml(m, true)).join('');
     });
@@ -1307,6 +1311,8 @@
     const grow = e.target.closest('li.group-row');
     if (grow) {
       const gid = grow.dataset.group;
+      if (e.target.closest('.g-edit')) { openGroupEdit(gid); return; }
+      if (e.target.closest('.g-del')) { deleteGroup(gid); return; }
       if (e.target.closest('.g-toggle')) {
         if (collapsedGroups.has(gid)) collapsedGroups.delete(gid); else collapsedGroups.add(gid);
         renderList();
@@ -1446,6 +1452,82 @@
     renderList();
     select(dst.id);
     toast(geometry.type === 'MultiPolygon' ? 'Samengevoegd (de vakken raken elkaar niet, dus het blijven twee delen)' : 'Vakken samengevoegd');
+  }
+
+
+  // ---------------------------------------------------------------- Groep in één keer bewerken of verwijderen
+  const groupMembers = (gid) => { const p = Store.activeProject(); return p ? Store.features(p.id).filter(f => f.props.groupId === gid) : []; };
+  const groupDialog = $('#groupDialog');
+  const groupForm = $('#groupForm');
+  let editingGroup = null;
+
+  function openGroupEdit(gid) {
+    const members = groupMembers(gid);
+    if (!members.length) return;
+    editingGroup = gid;
+    flushSave();
+    groupForm.reset();
+    const same = (k) => members.every(f => (f.props[k] || '') === (members[0].props[k] || '')) ? (members[0].props[k] || '') : '';
+    $('#groupTitle').textContent = 'Groep bewerken';
+    const area = members.reduce((t, f) => t + (measure(f).area || 0), 0);
+    $('#groupInfo').textContent = `${members.length} ${members.length === 1 ? 'vak' : 'vakken'}${area ? ` · ${areaParts(area).slice(0, 2).join(' ')}` : ''}. Alleen wat je invult of kiest wordt voor alle vakken aangepast.`;
+    groupForm.gname.value = members[0].props.group || '';
+    groupForm.status.value = same('status');
+    groupForm.kind.value = same('kind');
+    groupForm.category.value = same('category');
+    groupForm.fill.value = same('fill');
+    groupForm.color.value = same('color') || colorOf(members[0]);
+    $('#g-colorOn').checked = false;
+    $('#groupSave').textContent = `Opslaan (${members.length})`;
+    groupDialog.showModal();
+  }
+  groupForm.color.addEventListener('input', () => { $('#g-colorOn').checked = true; });
+
+  groupDialog.addEventListener('close', () => {
+    if (groupDialog.returnValue !== 'ok' || !editingGroup) return;
+    const members = groupMembers(editingGroup);
+    const date = new Date().toLocaleDateString('nl-NL');
+    const note = groupForm.note.value.trim();
+    members.forEach(f => {
+      const pr = { ...f.props };
+      if (groupForm.gname.value.trim()) pr.group = groupForm.gname.value.trim();
+      if (groupForm.status.value) pr.status = groupForm.status.value;
+      if (groupForm.kind.value) pr.kind = groupForm.kind.value;
+      if (groupForm.category.value.trim()) pr.category = groupForm.category.value.trim();
+      if (groupForm.fill.value) pr.fill = groupForm.fill.value;
+      if ($('#g-colorOn').checked) pr.color = groupForm.color.value;
+      if (note) pr.notes = [pr.notes, `${date}: ${note}`].filter(Boolean).join('\n');
+      Store.updateFeature(f.id, { props: pr });
+      applyStyle(Store.feature(f.id));
+    });
+    if (selectedId && members.some(f => f.id === selectedId)) select(selectedId);
+    renderList();
+    renderCategories();
+    toast(`${members.length} ${members.length === 1 ? 'vak' : 'vakken'} bijgewerkt`);
+    editingGroup = null;
+  });
+
+  $('#groupUngroup').addEventListener('click', async () => {
+    const gid = editingGroup;
+    const members = groupMembers(gid);
+    groupDialog.close('cancel');
+    if (!members.length) return;
+    if (!await askConfirm('Groep opheffen?', `De ${members.length} vakken blijven bestaan, maar staan weer als losse regels in de lijst.`, { ok: 'Opheffen', danger: false })) return;
+    members.forEach(f => { const pr = { ...f.props }; delete pr.groupId; delete pr.group; Store.updateFeature(f.id, { props: pr }); });
+    renderList();
+    toast('Groep opgeheven');
+  });
+
+  async function deleteGroup(gid) {
+    const members = groupMembers(gid);
+    if (!members.length) return;
+    const name = members[0].props.group || 'deze groep';
+    if (!await askConfirm('Groep verwijderen?', `Alle ${members.length} vakken van “${name}” worden definitief verwijderd. Maak eventueel eerst een GeoJSON-export.`)) return;
+    if (members.some(f => f.id === selectedId)) closePanel();
+    members.forEach(f => { featureLayers.get(f.id)?.remove(); featureLayers.delete(f.id); Store.deleteFeature(f.id); });
+    collapsedGroups.delete(gid);
+    renderList();
+    toast(`${members.length} vakken verwijderd`);
   }
 
   // ---------------------------------------------------------------- Eigenschappenpaneel

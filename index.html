@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/geoman/leaflet-geoman.css">
-  <link rel="stylesheet" href="css/style.css?v=20261123g">
+  <link rel="stylesheet" href="css/style.css?v=20261123h">
   <script>
     // Wachtwoordtoegang: vergrendeld tenzij dit apparaat (of dit tabblad) al toegang heeft
     (function () {
@@ -308,6 +308,34 @@
     </form>
   </dialog>
 
+  <dialog id="groupDialog">
+    <form method="dialog" id="groupForm">
+      <h2 id="groupTitle">Groep bewerken</h2>
+      <p id="groupInfo" class="group-info"></p>
+      <div class="field"><label for="g-name">Groepsnaam</label><input id="g-name" name="gname"></div>
+      <div class="two">
+        <div class="field"><label for="g-status">Status</label>
+          <select id="g-status" name="status"><option value="">— ongewijzigd —</option><option>Gepland</option><option>In uitvoering</option><option>Gereed</option><option>In beheer</option><option>Buiten gebruik</option></select></div>
+        <div class="field"><label for="g-kind">Soort</label>
+          <select id="g-kind" name="kind"><option value="">— ongewijzigd —</option><option value="gebied">Gebied</option><option value="asset">Asset</option></select></div>
+      </div>
+      <div class="field"><label for="g-category">Categorie</label><input id="g-category" name="category" list="categoryList" placeholder="— ongewijzigd —"></div>
+      <div class="two">
+        <div class="field"><label for="g-fill">Opvulling</label>
+          <select id="g-fill" name="fill"><option value="">— ongewijzigd —</option><option value="effen">Effen</option><option value="diagonaal">Gearceerd (schuin)</option><option value="kruis">Kruisarcering</option><option value="raster">Geruit (raster)</option><option value="dambord">Dambord</option><option value="horizontaal">Horizontale lijnen</option><option value="verticaal">Verticale lijnen</option><option value="stippen">Stippen</option><option value="geen">Geen (alleen rand)</option></select></div>
+        <div class="field"><label for="g-color">Kleur</label>
+          <div class="color-field"><input id="g-color" name="color" type="color" value="#3f8f3a"><label class="g-check"><input type="checkbox" id="g-colorOn"> voor alle vakken</label></div></div>
+      </div>
+      <div class="field"><label for="g-note">Notitie toevoegen aan alle vakken</label><textarea id="g-note" name="note" rows="2" placeholder="bijv. Gemaaid op 12 juni"></textarea></div>
+      <div class="dialog-actions group-actions">
+        <button type="button" id="groupUngroup" class="btn">Groep opheffen</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate class="btn">Annuleren</button>
+        <button value="ok" class="btn primary" id="groupSave">Opslaan</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="confirmDialog">
     <form method="dialog">
       <h2 id="confirmTitle">Weet je het zeker?</h2>
@@ -339,10 +367,10 @@
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="vendor/turf/turf.min.js"></script>
-  <script src="js/gate.js?v=20261123g"></script>
-  <script src="js/store.js?v=20261123g"></script>
-  <script src="js/share.js?v=20261123g"></script>
-  <script src="js/plan.js?v=20261123g"></script>
-  <script src="js/app.js?v=20261123g"></script>
+  <script src="js/gate.js?v=20261123h"></script>
+  <script src="js/store.js?v=20261123h"></script>
+  <script src="js/share.js?v=20261123h"></script>
+  <script src="js/plan.js?v=20261123h"></script>
+  <script src="js/app.js?v=20261123h"></script>
 </body>
 </html>
