@@ -671,13 +671,39 @@
     return best + 0.5;
   }
 
-  async function autoPlace(progress) {
+  // Zelf ingevulde straatnaam opzoeken (Amsterdam). Geeft { center, place, streets, labelTexts } of null.
+  async function lookupStreet(name) {
+    const url = `${LS}?rows=10&fq=type:weg&fq=gemeentenaam:${encodeURIComponent(GEMEENTE)}&fl=straatnaam,woonplaatsnaam,centroide_ll&q=${encodeURIComponent(name)}`;
+    const docs = (await (await fetch(url)).json()).response?.docs || [];
+    const want = norm(name).replace(/ /g, '');
+    const doc = docs.find(d => norm(d.straatnaam).replace(/ /g, '') === want) || docs[0];
+    const m = doc && /POINT\(([-\d.]+) ([-\d.]+)\)/.exec(doc.centroide_ll || '');
+    if (!m) return null;
+    return { center: [+m[2], +m[1]], place: doc.woonplaatsnaam, streets: [doc.straatnaam], labelTexts: [] };
+  }
+
+  async function autoPlace(progress, opts = {}) {
     const { lines, texts } = await getExtraction();
     const W = state.canvas.width, H = state.canvas.height;
     const scales = findScales(texts);
     progress('Straatnamen zoeken');
-    const loc = await findStreets(texts, progress);
-    if (!loc) throw new Error('Er is geen straatnaam op het plan gevonden die bij PDOK bekend is.');
+    let loc = texts.length ? await findStreets(texts, progress) : null;
+    if (opts.street) {
+      progress('Straat opzoeken');
+      const own = await lookupStreet(opts.street);
+      if (!own) throw new Error(`“${opts.street}” is niet gevonden als straat in Amsterdam. Controleer de spelling.`);
+      // straatnamen uit de tekening van dezelfde straat blijven bruikbaar voor de draaiing
+      const sameName = (t) => norm(t.streetName).replace(/ /g, '') === norm(own.streets[0]).replace(/ /g, '');
+      own.labelTexts = loc ? loc.labelTexts.filter(sameName) : [];
+      loc = own;
+      loc.manual = true;
+    }
+    if (!loc) {
+      const words = texts.filter(t => /[a-z]{4}/i.test(t.str)).length;
+      throw new Error(words < 5
+        ? 'In deze PDF staat (bijna) geen leesbare tekst: de letters zijn als lijnen getekend of het is een scan. Vul de straatnaam hieronder in.'
+        : 'Er is geen straatnaam op het plan gevonden die bij PDOK in Amsterdam bekend is.');
+    }
     state.streetNames = new Set(loc.streets.map(t => norm(t).replace(/ /g, '')));
     // De schaal op het plan klopt niet altijd ("Ntb", passend afgedrukt): een reeks schalen proberen en
     // daarna traploos bijstellen. Schalen uit de tekst gaan voorop.
@@ -716,7 +742,7 @@
       /postbus|\b\d{4}\s?[a-z]{2}\b|ingenieursbureau|gemeente amsterdam|www\.|@/i.test(o.str));
     const sheetLabels = loc.labelTexts.filter(t => !inInset(t.x, t.y) && !isOfficeAddress(t));
     let locSource = 'straatnamen';
-    if (sheetLabels.length) {
+    if (sheetLabels.length && !loc.manual) {
       const pts = [...new Map(sheetLabels.map(t => [t.streetName, t.streetLL])).values()];
       const med = (arr) => arr.slice().sort((a, b) => a - b)[Math.floor(arr.length / 2)];
       const c0 = [med(pts.map(p => p[0])), med(pts.map(p => p[1]))];
@@ -725,7 +751,7 @@
     }
     // Situatiekaartje met markering: nauwkeuriger startpunt dan de straatnamen (identieke hofjes e.d.)
     let insetRough = null;
-    if (insets.length) {
+    if (insets.length && !loc.manual) {
       insetRough = insetGeoref(insets[0], loc.labelTexts, lines);
       const far = insetRough && Math.hypot((insetRough.marker[0] - loc.center[0]) * 111, (insetRough.marker[1] - loc.center[1]) * 68) > 1.5;
       if (insetRough && (!sheetLabels.length || (insetRough.hasMarker && !far))) { loc.center = insetRough.marker; locSource = 'situatiekaartje'; }
@@ -738,7 +764,11 @@
     // zelf (en daarna van het blad) apart proberen — een lange straat of groot park ligt soms ver van het plan.
     const startPoints = [loc.center];
     const addStart = (ll) => { if (ll && !startPoints.some(c => Math.hypot((c[0] - ll[0]) * 111, (c[1] - ll[1]) * 68) < 0.15)) startPoints.push(ll); };
-    if (loc.source !== 'situatiekaartje') {
+    if (loc.manual) {
+      // straat zelf opgegeven: ook een stukje rond het midden van de straat proberen (lange straten)
+      const [la, ln] = loc.center;
+      [[0.0025, 0], [-0.0025, 0], [0, 0.004], [0, -0.004]].forEach(([dy, dx]) => addStart([la + dy, ln + dx]));
+    } else if (loc.source !== 'situatiekaartje') {
       drawLabels.forEach(t => addStart(t.streetLL));
       sheetLabels.forEach(t => addStart(t.streetLL));
     }
@@ -951,17 +981,18 @@
       }
       return { best, target };
     }
-    let best = null, target = null, bestCenter = null;
-    for (let i = 0; i < Math.min(startPoints.length, 4); i++) {
+    let best = null, target = null, bestCenter = null, lastErr = null;
+    const nTry = Math.min(startPoints.length, 5);
+    for (let i = 0; i < nTry; i++) {
       loc.center = startPoints[i];
-      if (i > 0) progress(`Andere plek proberen (${i + 1}/${Math.min(startPoints.length, 4)})`);
+      if (i > 0) progress(`Andere plek proberen (${i + 1}/${nTry})`);
       let res;
-      try { res = await attemptAt(); } catch (err) { if (i === 0 && startPoints.length === 1) throw err; continue; }
+      try { res = await attemptAt(); } catch (err) { lastErr = err; continue; }
       if (res.best && (!best || res.best.fit > best.fit)) { best = res.best; target = res.target; bestCenter = loc.center; }
       if (best && best.fit >= 0.55) break;
     }
     if (bestCenter) loc.center = bestCenter;
-    if (!best) throw new Error('De lijnen van de tekening konden niet op de ondergrond worden gelegd.');
+    if (!best) throw lastErr || new Error('De lijnen van de tekening konden niet op de ondergrond worden gelegd.');
     const { kx, ky } = target;
     const c = Math.cos(best.rot * Math.PI / 180), s = Math.sin(best.rot * Math.PI / 180);
     const toLatLng = (x, y) => {
@@ -1219,31 +1250,55 @@
     }
 
     // Eerst automatisch proberen (straatnaam + schaal + passen op de BGT-ondergrond)
-    state.mode = 'auto';
     const autoBox = body.querySelector('#planAuto');
-    const runId = (state.runId = (state.runId || 0) + 1);
-    autoBox.innerHTML = '<div class="plan-auto-busy"><span class="plan-spin"></span><span id="planAutoMsg">Plan automatisch plaatsen…</span></div>';
-    autoPlace((msg) => { const m = body.querySelector('#planAutoMsg'); if (m && state.runId === runId) m.textContent = msg; })
-      .then(({ transform, info }) => {
-        if (state.runId !== runId || state.mode !== 'auto') return;
-        applyTransform(transform);
-        const pct = Math.round(info.fit * 100);
-        const good = info.fit >= 0.35;
-        autoBox.innerHTML = `
-          <div class="plan-auto-result ${good ? 'ok' : 'warn'}">
-            <strong>${good ? 'Automatisch geplaatst' : 'Geplaatst, maar niet zeker'}</strong>
-            <span>${info.source === 'situatiekaartje' ? 'Via het situatiekaartje: ' : ''}${esc(info.streets.slice(0, 3).join(', '))}${info.streets.length > 3 ? ' e.a.' : ''}, ${esc(info.place)}</span>
-            <span>Schaal 1:${info.scaleN}${info.scaleFromText ? '' : ' (geschat)'} · draaiing ${Math.round(info.rotation)}° · ${pct}% van de lijnen valt op de BGT</span>
-            <em>${good ? 'Controleer of de tekening goed op de kaart ligt.' : 'Controleer goed; ligt hij verkeerd, kies dan Handmatig plaatsen.'}</em>
-          </div>`;
-        body.querySelector('#planManual').hidden = false;
-      })
-      .catch((err) => {
-        if (state.runId !== runId || state.mode !== 'auto') return;
-        console.warn(err);
-        autoBox.innerHTML = `<div class="plan-auto-result warn"><strong>Automatisch plaatsen lukte niet</strong><span>${esc(err.message)}</span><em>Plaats het plan met twee punten.</em></div>`;
-        startManualKeepMsg();
-      });
+    // Zelf een straatnaam opgeven (als de tekst in de PDF niet leesbaar is of de verkeerde plek gevonden werd)
+    const streetForm = (val) => `
+      <form class="plan-street" id="planStreetForm">
+        <label for="planStreet">Straatnaam bij het plan</label>
+        <div class="plan-street-row">
+          <input id="planStreet" type="text" placeholder="bijv. Hoekenes" autocomplete="off" value="${esc(val || '')}">
+          <button type="submit" class="btn primary">Zoek hier</button>
+        </div>
+      </form>`;
+    autoBox.addEventListener('submit', (e) => {
+      if (e.target.id !== 'planStreetForm') return;
+      e.preventDefault();
+      const v = body.querySelector('#planStreet').value.trim();
+      if (v.length >= 3) runAuto({ street: v });
+    });
+    function runAuto(opts = {}) {
+      state.mode = 'auto';
+      (state.mapMarkers || []).forEach(m => m.remove());
+      state.mapMarkers = [];
+      state.pairs = [];
+      wrap.querySelectorAll('.plan-dot').forEach(d => d.remove());
+      body.querySelector('#planInstr').hidden = true;
+      body.querySelector('#planRedo').hidden = true;
+      const runId = (state.runId = (state.runId || 0) + 1);
+      autoBox.innerHTML = `<div class="plan-auto-busy"><span class="plan-spin"></span><span id="planAutoMsg">${opts.street ? 'Plan plaatsen bij ' + esc(opts.street) + '…' : 'Plan automatisch plaatsen…'}</span></div>`;
+      autoPlace((msg) => { const m = body.querySelector('#planAutoMsg'); if (m && state.runId === runId) m.textContent = msg; }, opts)
+        .then(({ transform, info }) => {
+          if (state.runId !== runId || state.mode !== 'auto') return;
+          applyTransform(transform);
+          const pct = Math.round(info.fit * 100);
+          const good = info.fit >= 0.35;
+          autoBox.innerHTML = `
+            <div class="plan-auto-result ${good ? 'ok' : 'warn'}">
+              <strong>${good ? 'Automatisch geplaatst' : 'Geplaatst, maar niet zeker'}</strong>
+              <span>${info.source === 'situatiekaartje' ? 'Via het situatiekaartje: ' : ''}${esc(info.streets.slice(0, 3).join(', '))}${info.streets.length > 3 ? ' e.a.' : ''}, ${esc(info.place)}</span>
+              <span>Schaal 1:${info.scaleN}${info.scaleFromText ? '' : ' (geschat)'} · draaiing ${Math.round(info.rotation)}° · ${pct}% van de lijnen valt op de BGT</span>
+              <em>${good ? 'Controleer of de tekening goed op de kaart ligt. Verkeerde plek? Vul hieronder de straat in.' : 'Controleer goed; ligt hij verkeerd, vul dan de straat in of kies Handmatig plaatsen.'}</em>
+            </div>${streetForm(opts.street)}`;
+          body.querySelector('#planManual').hidden = false;
+        })
+        .catch((err) => {
+          if (state.runId !== runId || state.mode !== 'auto') return;
+          console.warn(err);
+          autoBox.innerHTML = `<div class="plan-auto-result warn"><strong>Automatisch plaatsen lukte niet</strong><span>${esc(err.message)}</span><em>Vul de straatnaam in en probeer opnieuw, of plaats het plan met twee punten.</em></div>${streetForm(opts.street)}`;
+          startManualKeepMsg();
+        });
+    }
+    runAuto();
     function startManualKeepMsg() {
       const msg = autoBox.innerHTML;
       startManual();
