@@ -2125,11 +2125,12 @@
       toast(`${isMobile() ? 'Tik' : 'Klik'} op de kaart waar je Street View wilt bekijken`);
     }
   }
+  // klein vierkant knopje links, onder de bewerkknoppen
   const StreetViewControl = L.Control.extend({
-    options: { position: 'topright' },
+    options: { position: 'topleft' },
     onAdd() {
-      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control label-ctl sv-ctl');
-      div.innerHTML = '<a href="#" title="Google Street View: klik daarna op de kaart" role="button" aria-label="Street View"><svg><use href="#i-streetview"/></svg>Street View</a>';
+      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control sv-ctl');
+      div.innerHTML = '<a href="#" title="Google Street View: klik daarna op de kaart" role="button" aria-label="Street View"><svg><use href="#i-streetview"/></svg></a>';
       L.DomEvent.disableClickPropagation(div);
       svBtn = div.firstChild;
       svBtn.addEventListener('click', (e) => { e.preventDefault(); setStreetViewMode(!svMode); });

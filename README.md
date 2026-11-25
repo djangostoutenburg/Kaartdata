@@ -26,7 +26,7 @@ Je kunt de map ook hosten via GitHub Pages (Settings → Pages → branch kiezen
 - **Delen als kijklink** – *Delen* in het objectpaneel maakt een link naar één vak; de deelknop bij het project maakt één link met álle vakken van het project. Ook een bundel (bijvoorbeeld alle vakken en bomen uit één beplantingsplan) deel je in één keer met de deelknop op de bundelregel; in een projectlink staan bundels als eigen regel, met de vakken eronder. Wie de link opent, ziet alleen de kaart met de gedeelde vakken (met lijst, oppervlaktes, route en mijn locatie) en kan niets wijzigen. De vormen zitten gecomprimeerd in de link zelf (op ± 10 cm nauwkeurig); er wordt niets online opgeslagen en er is geen lengtegrens.
 - **Export** – GeoJSON (inclusief oppervlakte/lengte) en CSV (opent in Excel); **import** van GeoJSON (WGS84).
 - **Print / PDF** – kaart afdrukken of als PDF opslaan (A4 liggend).
-- **Google Street View** – met de knop *Street View* rechtsboven op de kaart, en daarna een klik op de kaart, open je Street View op die plek. Een vak of asset bekijk je via *Street View* in het objectpaneel; ook in een kijklink staat de knop bij elk vak.
+- **Google Street View** – met het knopje met het gele poppetje links op de kaart (onder de bewerkknoppen), en daarna een klik op de kaart, open je Street View op die plek. Een vak of asset bekijk je via *Street View* in het objectpaneel; ook in een kijklink staat de knop bij elk vak.
 - Labels aan/uit met de knop **Aa**.
 
 Alle gegevens worden lokaal in je browser bewaard (localStorage). Maak regelmatig een GeoJSON-export als back-up, of om gegevens naar een andere computer of naar GIS-software (QGIS, ArcGIS) te verplaatsen.

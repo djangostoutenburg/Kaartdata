@@ -360,7 +360,8 @@ body.sidebar-collapsed #openSidebar { display: grid; }
 
 .label-ctl a { width: auto !important; padding: 0 10px; font: 600 12px var(--font); display: flex !important; align-items: center; gap: 4px; }
 .label-ctl a.off { color: var(--faint); }
-.sv-ctl a svg { width: 16px; height: 16px; fill: #f4b400; stroke: #8a6100; stroke-width: 1.2; }
+.sv-ctl a { display: grid !important; place-items: center; }
+.sv-ctl a svg { width: 22px; height: 22px; fill: #f4b400; stroke: #8a6100; stroke-width: 1.2; }
 .sv-ctl a.on { background: var(--accent) !important; color: #fff !important; }
 .sv-ctl a.on svg { stroke: #fff; }
 .sv-pick, .sv-pick .leaflet-interactive { cursor: crosshair !important; }
@@ -586,7 +587,7 @@ body.viewer .leaflet-top.leaflet-left { top: 12px; }
   @page { size: A4 landscape; margin: 10mm; }
   body { background: #fff; }
   #sidebar, #panel, .map-top, .draw-hint, .mobile-tools, #toast, .backdrop,
-  .leaflet-control-zoom, .leaflet-pm-toolbar, .leaflet-control-layers, .label-ctl, .locate-btn { display: none !important; }
+  .leaflet-control-zoom, .leaflet-pm-toolbar, .leaflet-control-layers, .label-ctl, .sv-ctl, .locate-btn { display: none !important; }
   #app, #mapWrap { height: auto; display: block; overflow: visible; }
   #map { position: relative; height: 172mm; border: 1px solid #999; }
   #printTitle { display: block; font: 600 15px var(--font); margin-bottom: 4mm; color: #000; }
