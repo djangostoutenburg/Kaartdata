@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/geoman/leaflet-geoman.css">
-  <link rel="stylesheet" href="css/style.css?v=20261123m">
+  <link rel="stylesheet" href="css/style.css?v=20261125a">
   <script>
     // Wachtwoordtoegang: vergrendeld tenzij dit apparaat (of dit tabblad) al toegang heeft
     (function () {
@@ -56,6 +56,7 @@
       <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
       <symbol id="i-pick" viewBox="0 0 24 24"><path d="M9 9l11 4.2-4.6 1.6L13.8 19.5z"/><path d="M4.5 4.5l2 2M9 2.5v2.8M2.5 9h2.8M13.2 4.2l-1.6 1.6M4.2 13.2l1.6-1.6"/></symbol>
       <symbol id="i-merge" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="10" height="10" rx="1"/><rect x="10.5" y="10.5" width="10" height="10" rx="1"/></symbol>
+      <symbol id="i-streetview" viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.3"/><path d="M9 21v-6H7.5v-4.5A2.5 2.5 0 0 1 10 8h4a2.5 2.5 0 0 1 2.5 2.5V15H15v6z"/></symbol>
       <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
       <symbol id="i-plan" viewBox="0 0 24 24"><path d="M14 3.5H6.5a1 1 0 0 0-1 1v15a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V8z"/><path d="M14 3.5V8h4.5"/><path d="M8.5 16.5c1.5-2.5 3-2.5 4 0s2.5 2.5 3 .5"/><circle cx="10" cy="12" r="1.2" class="fill"/></symbol>
@@ -286,6 +287,7 @@
             <button type="button" id="zoomFeature" class="btn"><svg><use href="#i-target"/></svg>Zoom</button>
             <button type="button" id="editShape" class="btn"><svg><use href="#i-vertex"/></svg>Vorm</button>
             <button type="button" id="shareFeature" class="btn"><svg><use href="#i-share"/></svg>Delen</button>
+            <button type="button" id="streetFeature" class="btn" title="Bekijk deze plek in Google Street View"><svg><use href="#i-streetview"/></svg>Street View</button>
             <button type="button" id="deleteFeature" class="btn danger"><svg><use href="#i-trash"/></svg>Verwijder</button>
           </div>
           <p id="saveState" class="save-state">Wijzigingen worden automatisch bewaard</p>
@@ -367,10 +369,10 @@
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="vendor/turf/turf.min.js"></script>
-  <script src="js/gate.js?v=20261123m"></script>
-  <script src="js/store.js?v=20261123m"></script>
-  <script src="js/share.js?v=20261123m"></script>
-  <script src="js/plan.js?v=20261123m"></script>
-  <script src="js/app.js?v=20261123m"></script>
+  <script src="js/gate.js?v=20261125a"></script>
+  <script src="js/store.js?v=20261125a"></script>
+  <script src="js/share.js?v=20261125a"></script>
+  <script src="js/plan.js?v=20261125a"></script>
+  <script src="js/app.js?v=20261125a"></script>
 </body>
 </html>

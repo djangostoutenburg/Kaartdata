@@ -360,6 +360,13 @@ body.sidebar-collapsed #openSidebar { display: grid; }
 
 .label-ctl a { width: auto !important; padding: 0 10px; font: 600 12px var(--font); display: flex !important; align-items: center; gap: 4px; }
 .label-ctl a.off { color: var(--faint); }
+.sv-ctl a svg { width: 16px; height: 16px; fill: #f4b400; stroke: #8a6100; stroke-width: 1.2; }
+.sv-ctl a.on { background: var(--accent) !important; color: #fff !important; }
+.sv-ctl a.on svg { stroke: #fff; }
+.sv-pick, .sv-pick .leaflet-interactive { cursor: crosshair !important; }
+.sv-pick .leaflet-interactive { pointer-events: none !important; }
+#streetFeature svg { fill: #f4b400; stroke: #8a6100; stroke-width: 1.2; }
+.vc-actions a[href*="map_action=pano"] svg { fill: #f4b400; stroke: #8a6100; stroke-width: 1.2; }
 
 .leaflet-tooltip.feature-label {
   background: rgba(255,255,255,.92); color: #142133; border: 0; border-radius: 4px;
@@ -408,6 +415,7 @@ body.sidebar-collapsed #openSidebar { display: grid; }
 .panel-actions { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
 .action-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .action-row .btn { padding: 0 6px; }
+.action-row #deleteFeature { grid-column: span 2; }
 
 /* ---------------------------------------------------------------- Dialogen & toast */
 dialog {

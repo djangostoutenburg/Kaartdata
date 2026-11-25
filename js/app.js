@@ -100,6 +100,17 @@
   const group = L.featureGroup().addTo(map);
   let selectedId = null;
   let showLabels = true;
+  // Google Street View op een punt (opent in een nieuw tabblad / de Google Maps-app)
+  const streetViewUrl = (lat, lng) => `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat.toFixed(6)},${lng.toFixed(6)}`;
+  function openStreetView(lat, lng) { window.open(streetViewUrl(lat, lng), '_blank', 'noopener'); }
+  // Kijkpunt voor een object: het punt zelf, anders een punt dat zeker binnen de vorm ligt
+  function viewPointOf(f) {
+    try {
+      if (f.geometry.type === 'Point') return [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+      const c = turf.pointOnFeature(f.geometry).geometry.coordinates;
+      return [c[1], c[0]];
+    } catch (e) { return null; }
+  }
 
   // ---------------------------------------------------------------- Stijlen
   function colorOf(f) {
@@ -464,6 +475,7 @@
         <div class="vc-actions">
           <button type="button" class="btn" data-vc="fit"><svg><use href="#i-target"/></svg>Toon vak</button>
           ${c ? `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${c[1].toFixed(6)},${c[0].toFixed(6)}"><svg><use href="#i-next"/></svg>Route</a>` : ''}
+          ${viewPointOf(f) ? `<a class="btn" target="_blank" rel="noopener" href="${streetViewUrl(...viewPointOf(f))}"><svg><use href="#i-streetview"/></svg>Street View</a>` : ''}
           ${locateBtn}
         </div>
         ${foot}`;
@@ -608,6 +620,7 @@
   });
 
   map.on('click', (e) => {
+    if (svMode) { openStreetView(e.latlng.lat, e.latlng.lng); setStreetViewMode(false); return; }
     if (picking) { pickMsg = `${isMobile() ? 'Tik' : 'Klik'} op een groen vlak, haag of boom`; renderPickStatus(); pickMsg = ''; return; }
     if (!map.pm.globalDrawModeEnabled() && !editLayer) closePanel();
   });
@@ -1705,6 +1718,11 @@
   $('#sheetGrip').addEventListener('click', togglePeek);
   $('#panelHead').addEventListener('click', togglePeek);
   $('#zoomFeature').addEventListener('click', () => zoomTo(selectedId));
+  $('#streetFeature').addEventListener('click', () => {
+    const f = Store.feature(selectedId);
+    const pt = f && viewPointOf(f);
+    if (pt) openStreetView(pt[0], pt[1]);
+  });
   $('#deleteFeature').addEventListener('click', async () => {
     const f = Store.feature(selectedId);
     if (!f || !await askConfirm('Object verwijderen?', `“${f.props.name || 'Naamloos'}” wordt definitief van de kaart verwijderd.`)) return;
@@ -2095,6 +2113,31 @@
     },
   });
   new LabelControl().addTo(map);
+
+  // Street View: knop aanzetten en daarna op de kaart tikken
+  let svMode = false, svBtn = null;
+  function setStreetViewMode(on) {
+    svMode = on;
+    svBtn?.classList.toggle('on', on);
+    map.getContainer().classList.toggle('sv-pick', on);
+    if (on) {
+      stopPick(); stopDrawing(); stopEditing();
+      toast(`${isMobile() ? 'Tik' : 'Klik'} op de kaart waar je Street View wilt bekijken`);
+    }
+  }
+  const StreetViewControl = L.Control.extend({
+    options: { position: 'topright' },
+    onAdd() {
+      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control label-ctl sv-ctl');
+      div.innerHTML = '<a href="#" title="Google Street View: klik daarna op de kaart" role="button" aria-label="Street View"><svg><use href="#i-streetview"/></svg>Street View</a>';
+      L.DomEvent.disableClickPropagation(div);
+      svBtn = div.firstChild;
+      svBtn.addEventListener('click', (e) => { e.preventDefault(); setStreetViewMode(!svMode); });
+      return div;
+    },
+  });
+  new StreetViewControl().addTo(map);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && svMode) setStreetViewMode(false); });
 
   // Zijbalk: inklappen op desktop, schuiflade op telefoon
   const sidebar = $('#sidebar');
