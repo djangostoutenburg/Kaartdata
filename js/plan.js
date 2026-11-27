@@ -1010,7 +1010,7 @@
     const scales = findScales(texts);
     progress('Straatnamen zoeken');
     // Plaatje: straatnamen lezen met tekstherkenning, langs de twee hoofdrichtingen van de kaart
-    if (raster && !texts.length && !raster.ocrDone) {
+    if (raster && !texts.length && !raster.ocrDone && !opts.point) {
       raster.ocrDone = true;
       try {
         const segs = raster.pts.map(([x, y, a]) => { const r = a * Math.PI / 180; return [0, 0, Math.cos(r) * 10, Math.sin(r) * 10]; });
@@ -1021,8 +1021,11 @@
         texts.push(...read);
       } catch (e) { console.warn('OCR', e); }
     }
-    let loc = texts.length ? await findStreets(texts, progress) : null;
-    if (opts.street) {
+    let loc = texts.length && !opts.point ? await findStreets(texts, progress) : null;
+    if (opts.point) {
+      // zelf aangewezen plek: alleen daar zoeken (tekst in de tekening helpt nog wel bij de draaiing)
+      loc = { center: opts.point.slice(), place: 'rond de aangewezen stip', streets: ['Ingelezen'], labelTexts: [], along: [], manual: true, point: true };
+    } else if (opts.street) {
       progress('Straat opzoeken');
       const own = await lookupStreet(opts.street);
       if (!own) throw new Error(`“${opts.street}” is niet gevonden als straat in Amsterdam. Controleer de spelling.`);
@@ -1466,6 +1469,8 @@
   function close() {
     if (state?.mapClick) ctx.map.off('click', state.mapClick);
     (state?.mapMarkers || []).forEach(m => m.remove());
+    if (state?.pointMarker) state.pointMarker.remove();
+    ctx.map.getContainer().classList.remove('plan-point-pick');
     if (state?.preview) state.preview.remove();
     panel.hidden = true;
     document.body.classList.remove('planning');
@@ -1599,7 +1604,17 @@
       if (ctx.isMobile()) ctx.toast('Tik nu op hetzelfde punt op de kaart');
     });
 
+    if (state.mapClick) ctx.map.off('click', state.mapClick);
     state.mapClick = (e) => {
+      if (state.pickPoint) {
+        // één stip: de tekening rond deze plek inlezen en passen
+        state.pickPoint = false;
+        ctx.map.getContainer().classList.remove('plan-point-pick');
+        if (state.pointMarker) state.pointMarker.remove();
+        state.pointMarker = L.marker(e.latlng, { icon: L.divIcon({ className: 'plan-pin', html: '<span>•</span>', iconSize: [26, 26], iconAnchor: [13, 13] }), interactive: false }).addTo(ctx.map);
+        runAuto({ point: [e.latlng.lat, e.latlng.lng] });
+        return;
+      }
       if (state.mode !== 'manual' || state.waiting !== 'map') return;
       const pair = state.pairs[state.pairs.length - 1];
       pair.ll = e.latlng;
@@ -1646,7 +1661,14 @@
           <input id="planStreet" type="text" placeholder="bijv. Hoekenes" autocomplete="off" value="${esc(val || '')}">
           <button type="submit" class="btn primary">Zoek hier</button>
         </div>
+        <button type="button" class="btn plan-point-btn" data-point><svg><use href="#i-point"/></svg>Of zet één stip op de kaart waar het plan ligt</button>
       </form>`;
+    autoBox.addEventListener('click', (e) => {
+      if (!e.target.closest('[data-point]')) return;
+      state.pickPoint = true;
+      ctx.map.getContainer().classList.add('plan-point-pick');
+      ctx.toast(`${ctx.isMobile() ? 'Tik' : 'Klik'} op de kaart op de plek van het plan (ongeveer is goed)`);
+    });
     autoBox.addEventListener('submit', (e) => {
       if (e.target.id !== 'planStreetForm') return;
       e.preventDefault();
@@ -1662,8 +1684,10 @@
       body.querySelector('#planInstr').hidden = true;
       body.querySelector('#planRedo').hidden = true;
       const runId = (state.runId = (state.runId || 0) + 1);
-      autoBox.innerHTML = `<div class="plan-auto-busy"><span class="plan-spin"></span><span id="planAutoMsg">${opts.street ? 'Plan plaatsen bij ' + esc(opts.street) + '…' : 'Plan automatisch plaatsen…'}</span></div>`;
-      autoPlace((msg) => { const m = body.querySelector('#planAutoMsg'); if (m && state.runId === runId) m.textContent = msg; }, opts)
+      autoBox.innerHTML = `<div class="plan-auto-busy"><span class="plan-spin"></span><span id="planAutoMsg">${opts.point ? 'Plan inlezen rond de stip…' : opts.street ? 'Plan plaatsen bij ' + esc(opts.street) + '…' : 'Plan automatisch plaatsen…'}</span></div>
+        ${opts.point ? '' : '<button type="button" class="plan-link" data-point>Of zet zelf één stip op de kaart waar het plan ligt</button>'}`;
+      // een nieuwe poging (bijv. stip gezet) breekt de lopende af
+      autoPlace((msg) => { if (state.runId !== runId) throw new Error('afgebroken'); const m = body.querySelector('#planAutoMsg'); if (m) m.textContent = msg; }, opts)
         .then(({ transform, info }) => {
           if (state.runId !== runId || state.mode !== 'auto') return;
           applyTransform(transform);
@@ -1681,7 +1705,7 @@
         .catch((err) => {
           if (state.runId !== runId || state.mode !== 'auto') return;
           console.warn(err);
-          autoBox.innerHTML = `<div class="plan-auto-result warn"><strong>Automatisch plaatsen lukte niet</strong><span>${esc(err.message)}</span><em>Vul de straatnaam in en probeer opnieuw, of plaats het plan met twee punten.</em></div>${streetForm(opts.street)}`;
+          autoBox.innerHTML = `<div class="plan-auto-result warn"><strong>Automatisch plaatsen lukte niet</strong><span>${esc(err.message)}</span><em>Vul de straatnaam in, zet één stip op de kaart, of plaats het plan met twee punten.</em></div>${streetForm(opts.street)}`;
           startManualKeepMsg();
         });
     }
@@ -1770,6 +1794,7 @@
         byColor.forEach((items, color) => {
           if (items.length) state.groups.unshift({ key: 'point:' + color, kind: 'point', color, items, name: 'Bomen', checked: true, pxArea: 0 });
         });
+        state.groups = tidyGroups(state.groups, state.transform.metresPerPx ** 2);
         global.__planGroups = state.groups;
       } catch (e) {
         console.error(e);
@@ -1907,10 +1932,86 @@
     refresh();
   }
 
+  // Opruimen vóór het importeren, zodat er alleen de nodige vakken komen:
+  // 1. aansluitende of overlappende stukjes van dezelfde kleur (gearceerde stroken, opgeknipte vlakken) → één vak,
+  //    behalve als beide stukjes een eigen vaknaam/GIS-nummer hebben (dan zijn het echt verschillende vakken);
+  // 2. veel kleine, ronde vlakjes van één kleur (boom- of plantsymbolen) → punten in plaats van vakken.
+  function tidyGroups(groups, m2PerPx2) {
+    const T = global.turf;
+    if (!T) return groups;
+    const snap = (r) => r.map(([x, y]) => [Math.round(x * 4) / 4, Math.round(y * 4) / 4]);
+    const closeRing = (r) => { const q = snap(r); if (q[0][0] !== q[q.length - 1][0] || q[0][1] !== q[q.length - 1][1]) q.push(q[0]); return q; };
+    const idOf = (it) => it.vakName || (it.gis ? 'gis' + it.gis : '');
+    const out = [];
+    groups.forEach(g => {
+      if (g.kind !== 'fill' || g.items.length < 2) { out.push(g); return; }
+      // --- 2. symbolen
+      const roundSmall = g.items.filter(it => {
+        const [x0, y0, x1, y1] = it.bb || bboxOf(it.outer);
+        const w = x1 - x0, h = y1 - y0, fill = it.area / (w * h || 1);
+        return it.area * m2PerPx2 < 8 && Math.max(w, h) / Math.max(1e-6, Math.min(w, h)) < 1.35 && fill > 0.55 && fill < 0.9;
+      });
+      if (g.items.length >= 6 && roundSmall.length >= g.items.length * 0.8) {
+        const tree = /boom|bomen|tree|kroon/i.test(g.name || '');
+        out.push({ key: 'point:' + g.color, kind: 'point', color: g.color, name: tree ? g.name : (g.name ? g.name : 'Symbolen'), checked: tree,
+          items: roundSmall.map(it => { const [x0, y0, x1, y1] = it.bb || bboxOf(it.outer); return { pt: [(x0 + x1) / 2, (y0 + y1) / 2] }; }), pxArea: 0, symbols: true });
+        const rest = g.items.filter(it => !roundSmall.includes(it));
+        if (rest.length) out.push({ ...g, items: rest, pxArea: rest.reduce((t, it) => t + it.area, 0) });
+        return;
+      }
+      // --- 1. samenvoegen
+      const items = g.items.map(it => ({ it, bb: it.bb || bboxOf(it.outer), poly: (() => { try { return T.polygon([closeRing(it.outer), ...it.holes.map(closeRing)]); } catch (e) { return null; } })() }));
+      const parent = items.map((_, i) => i);
+      const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+      const ids = items.map(x => new Set(idOf(x.it) ? [idOf(x.it)] : []));
+      for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+        const a = items[i], b = items[j];
+        if (!a.poly || !b.poly) continue;
+        if (a.bb[0] > b.bb[2] + 1 || b.bb[0] > a.bb[2] + 1 || a.bb[1] > b.bb[3] + 1 || b.bb[1] > a.bb[3] + 1) continue;
+        const ra = find(i), rb = find(j);
+        if (ra === rb) continue;
+        // twee verschillende vaknamen: niet samenvoegen
+        if (ids[ra].size && ids[rb].size && ![...ids[ra]].some(x => ids[rb].has(x))) continue;
+        let touch = false;
+        try { touch = T.booleanIntersects(a.poly, b.poly); } catch (e) { /* */ }
+        if (!touch) continue;
+        parent[rb] = ra;
+        ids[rb].forEach(x => ids[ra].add(x));
+      }
+      const clusters = new Map();
+      items.forEach((x, i) => { const r = find(i); if (!clusters.has(r)) clusters.set(r, []); clusters.get(r).push(x); });
+      const merged = [];
+      clusters.forEach(list => {
+        if (list.length === 1) { merged.push(list[0].it); return; }
+        let u = null;
+        try { u = T.union(T.featureCollection(list.map(x => x.poly).filter(Boolean))); } catch (e) { u = null; }
+        if (!u) { list.forEach(x => merged.push(x.it)); return; }
+        const parts = u.geometry.type === 'Polygon' ? [u.geometry.coordinates] : u.geometry.coordinates;
+        const its = list.map(x => x.it);
+        const pick = (f) => its.map(f).find(Boolean) || '';
+        parts.forEach(rings => {
+          const strip = (r) => r.slice(0, -1);
+          const outer = strip(rings[0]), holes = rings.slice(1).map(strip);
+          const area = ringArea(outer) - holes.reduce((t, h) => t + ringArea(h), 0);
+          merged.push({
+            ...its[0], outer, holes, area, bb: bboxOf(outer),
+            label: pick(x => x.label), vakName: pick(x => x.vakName), gis: pick(x => x.gis), areaText: pick(x => x.areaText),
+            extra: [...new Set(its.flatMap(x => x.extra || []))], texts: [...new Set(its.flatMap(x => x.texts || []))], pieces: its.length,
+          });
+        });
+      });
+      g.mergedFrom = g.items.length;
+      g.items = merged;
+      g.pxArea = merged.reduce((t, it) => t + it.area, 0);
+      out.push(g);
+    });
+    return out;
+  }
+
   function groupHtml(g, i) {
     const m2 = g.pxArea * state.transform.metresPerPx * state.transform.metresPerPx;
-    const info = g.kind === 'point' ? `${g.items.length} ${g.items.length === 1 ? 'punt' : 'punten'} · uit de stippen in de tekening`
-      : `${g.items.length} ${g.items.length === 1 ? 'vak' : 'vakken'} · ${fmtArea(m2)}${g.kind === 'outline' ? ' · alleen omtrek' : ''}`;
+    const info = g.kind === 'point' ? `${g.items.length} ${g.items.length === 1 ? 'punt' : 'punten'} · ${g.symbols ? 'symbolen in de tekening (bijv. bomen)' : 'uit de stippen in de tekening'}`
+      : `${g.items.length} ${g.items.length === 1 ? 'vak' : 'vakken'} · ${fmtArea(m2)}${g.kind === 'outline' ? ' · alleen omtrek' : ''}${g.mergedFrom > g.items.length ? ` · samengevoegd uit ${g.mergedFrom} stukjes` : ''}`;
     return `
         <li class="${g.checked ? 'on' : ''}">
           <input type="checkbox" id="pg${i}" data-i="${i}" ${g.checked ? 'checked' : ''}>
@@ -1935,5 +2036,5 @@
     return m2 >= 10000 ? `${nf(m2 / 10000, 2)} ha` : `${nf(m2, 0)} m²`;
   }
 
-  global.PlanImport = { open, _internal: { solveTransform, analyse, extractShapes, extractTexts, findScales, rasterAnalyse } };
+  global.PlanImport = { open, _internal: { solveTransform, analyse, extractShapes, extractTexts, findScales, rasterAnalyse, tidyGroups } };
 })(window);

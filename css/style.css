@@ -756,3 +756,7 @@ li.group-row:not(.open) .g-toggle svg { transform: rotate(180deg); }
   .plan-street { margin-top: 6px; }
   .plan-street label { display: none; }
 }
+.plan-point-btn { margin-top: 6px; width: 100%; justify-content: center; }
+.plan-point-btn svg { width: 16px; height: 16px; }
+.plan-link { align-self: flex-start; margin-top: 6px; padding: 0; border: 0; background: none; color: var(--accent); font: 600 13px var(--font); text-decoration: underline; cursor: pointer; }
+.plan-point-pick, .plan-point-pick .leaflet-interactive { cursor: crosshair !important; }
