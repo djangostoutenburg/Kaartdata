@@ -1021,10 +1021,11 @@
         texts.push(...read);
       } catch (e) { console.warn('OCR', e); }
     }
-    let loc = texts.length && !opts.point ? await findStreets(texts, progress) : null;
+    let loc = texts.length ? await findStreets(texts, progress) : null;
+    const textLabels = loc ? loc.labelTexts : [];      // straatnamen in de tekening (ook bij een stip: voor de draaiing)
     if (opts.point) {
       // zelf aangewezen plek: alleen daar zoeken (tekst in de tekening helpt nog wel bij de draaiing)
-      loc = { center: opts.point.slice(), place: 'rond de aangewezen stip', streets: ['Ingelezen'], labelTexts: [], along: [], manual: true, point: true };
+      loc = { center: opts.point.slice(), place: 'rond de aangewezen stip', streets: ['Ingelezen'], labelTexts: textLabels, along: [], manual: true, point: true };
     } else if (opts.street) {
       progress('Straat opzoeken');
       const own = await lookupStreet(opts.street);
@@ -1103,7 +1104,9 @@
     // zelf (en daarna van het blad) apart proberen — een lange straat of groot park ligt soms ver van het plan.
     const startPoints = [loc.center];
     const addStart = (ll) => { if (ll && !startPoints.some(c => Math.hypot((c[0] - ll[0]) * 111, (c[1] - ll[1]) * 68) < 0.15)) startPoints.push(ll); };
-    if (loc.manual) {
+    if (loc.point) {
+      // stip: alleen daar zoeken (geen andere startpunten verderop)
+    } else if (loc.manual) {
       // straat zelf opgegeven: ook een stukje rond het midden van de straat proberen (lange straten)
       // adressen langs de straat, verspreid (minstens ±250 m uit elkaar); anders een kring rond het midden
       const spread = [];
@@ -1189,6 +1192,14 @@
       const angDiff = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180);
       let rots = [];
       for (let k = 0; k < 4; k++) for (const f of (raster ? [0] : [-1, 0, 1])) rots.push(tDom - sDom + k * 90 + f);
+      if (loc.point) {
+        // stip: ook het stratenpatroon vlak rond de stip (het grote gebied kan een ander raster hebben)
+        const near = tSegs.filter(([x0, y0]) => Math.hypot(x0, y0) < 150);
+        if (near.length > 30) {
+          const tLoc = dominantAngle(near);
+          if (Math.abs(((tLoc - tDom) % 90 + 135) % 90 - 45) > 2) for (let k = 0; k < 4; k++) for (const f of (raster ? [0] : [-1, 0, 1])) rots.push(tLoc - sDom + k * 90 + f);
+        }
+      }
       if (labelRots.length) {
         // richtingen waar de meeste straatnamen het over eens zijn (per 180°), de beste twee
         const base = labelRots.filter((_, i) => i % 2 === 0);
@@ -1200,8 +1211,13 @@
         clusters.sort((a, b) => b.n - a.n);
         const top = clusters.slice(0, 2).map(c => c.sum / c.n);
         // roosterrichting gebruiken als die dichtbij een straatnaam-richting ligt (nauwkeuriger)
-        const grid = rots.filter(r => top.some(t => angDiff(r, t) < 8 || angDiff(r, t + 180) < 8));
-        rots = grid.length ? grid : top.flatMap(t => [t, t + 180]).flatMap(r => [r - 2, r, r + 2]);
+        // per richting: de roosterrichting als die er dichtbij ligt, anders de richting van de straatnaam zelf
+        const next = [];
+        top.forEach(t => {
+          const grid = rots.filter(r => angDiff(r, t) < 8 || angDiff(r, t + 180) < 8);
+          next.push(...(grid.length ? grid : [t, t + 180].flatMap(r => [r - 2, r, r + 2])));
+        });
+        rots = [...new Set(next.map(r => Math.round(r * 10) / 10))];
       }
       if (global.__planForce?.rots) rots = global.__planForce.rots;
       const dbg = (global.__planDebug = { prior, insetRot: loc.insetRot, streets: loc.streets, labels: loc.labelTexts.map(t => [t.str, t.streetName]), center: loc.center, source: loc.source, insets, drawArea, nPts: upts.length, labelRots, tDom, sDom, rots: rots.map(r => Math.round(r)), scales: tryScales });
@@ -1211,6 +1227,18 @@
       const n = coarse.length;
       const rx = new Float64Array(n), ry = new Float64Array(n), rb = new Uint8Array(n);
       const span = prior ? 150 : Math.max(40, Math.min(R * 0.8, 300));
+      // Zelf gezette stip: die moet bij de vakken van de tekening vallen (met ±80 m speling), anders telt de plek niet
+      // waar liggen de vakken? (gekleurde vlakken; anders het hele tekengebied)
+      const colored = (state.extraction?.shapes || []).filter(sh => sh.kind === 'fill' && saturation(sh.color) > 0.12 && sh.area > W * H * 0.0002);
+      let ia = colored.length ? colored.map(sh => bboxOf(sh.outer)).reduce((q, b) => [Math.min(q[0], b[0]), Math.min(q[1], b[1]), Math.max(q[2], b[2]), Math.max(q[3], b[3])]) : drawArea;
+      const padX = (ia[2] - ia[0]) * 0.15, padY = (ia[3] - ia[1]) * 0.15;
+      ia = [ia[0] - padX, ia[1] - padY, ia[2] + padX, ia[3] + padY];
+      const daU = [ia[0] - W / 2, -(ia[3] - H / 2), ia[2] - W / 2, -(ia[1] - H / 2)];
+      const stipOk = (c, s, m, tx, ty) => {
+        if (!loc.point) return true;
+        const x = (c * -tx + s * -ty) / m, y = (-s * -tx + c * -ty) / m, mg = 80 / m;
+        return x >= daU[0] - mg && x <= daU[2] + mg && y >= daU[1] - mg && y <= daU[3] + mg;
+      };
       const [ox, oy] = prior || [0, 0];
       // Bij een plaatje (overzichtskaart) schalen de marges mee met de schaal: anders wint een te kleine
       // schaal, omdat een verkleinde tekening altijd wel ergens op dichte BGT-lijnen valt.
@@ -1226,6 +1254,7 @@
           const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
           for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
           for (let ty = oy - span; ty <= oy + span; ty += STEP) for (let tx = ox - span; tx <= ox + span; tx += STEP) {
+            if (!stipOk(c, s2, m, tx, ty)) continue;
             let sc = 0;
             for (let k = 0; k < n; k++) {
               const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
@@ -1267,6 +1296,7 @@
           const c = Math.cos(rot * Math.PI / 180), s2 = Math.sin(rot * Math.PI / 180);
           for (let k = 0; k < n; k++) { const [x, y, a] = coarse[k]; rx[k] = (c * x - s2 * y) * m + off + 0.5; ry[k] = (s2 * x + c * y) * m + off + 0.5; rb[k] = binOf(a + rot); }
           for (let ty = c0.ty - PW; ty <= c0.ty + PW; ty += PS) for (let tx = c0.tx - PW; tx <= c0.tx + PW; tx += PS) {
+            if (!stipOk(c, s2, m, tx, ty)) continue;
             let sc = 0;
             for (let k = 0; k < n; k++) {
               const i = (rx[k] + tx) | 0, j = (ry[k] + ty) | 0;
@@ -1321,6 +1351,7 @@
             // schaal rond het midden van de tekening aanpassen: verschuiving blijft gelijk
             const nx = { ...cur, tx: cur.tx + dx, ty: cur.ty + dy, rot: cur.rot + dr, m: cur.m * (1 + ds) };
             if (nx.m < mMin || nx.m > mMax) continue;      // niet weglopen naar een onzinnige schaal
+            if (loc.point && !stipOk(Math.cos(nx.rot * Math.PI / 180), Math.sin(nx.rot * Math.PI / 180), nx.m, nx.tx, nx.ty)) continue;
             const sc = score(nx, tol);
             if (sc > cur.sc + 1e-6) { cur = { ...nx, sc }; improved = true; }
           }
@@ -1692,13 +1723,15 @@
           if (state.runId !== runId || state.mode !== 'auto') return;
           applyTransform(transform);
           const pct = Math.round(info.fit * 100);
-          const good = info.fit >= 0.35;
+          const good = info.fit >= 0.5;
           autoBox.innerHTML = `
             <div class="plan-auto-result ${good ? 'ok' : 'warn'}">
               <strong>${good ? 'Automatisch geplaatst' : 'Geplaatst, maar niet zeker'}</strong>
               <span>${info.source === 'situatiekaartje' ? 'Via het situatiekaartje: ' : ''}${esc(info.streets.slice(0, 3).join(', '))}${info.streets.length > 3 ? ' e.a.' : ''}, ${esc(info.place)}</span>
               <span>Schaal 1:${info.scaleN}${info.scaleFromText ? '' : ' (geschat)'} · draaiing ${Math.round(info.rotation)}° · ${pct}% van de lijnen valt op de BGT</span>
-              <em>${good ? 'Controleer of de tekening goed op de kaart ligt. Verkeerde plek? Vul hieronder de straat in.' : 'Controleer goed; ligt hij verkeerd, vul dan de straat in of kies Handmatig plaatsen.'}</em>
+              <em>${opts.point
+                ? (good ? 'Controleer of de tekening goed op de kaart ligt.' : 'Ligt hij verkeerd? Zet de stip precies op een vak uit het plan, of kies Handmatig plaatsen.')
+                : good ? 'Controleer of de tekening goed op de kaart ligt. Verkeerde plek? Vul hieronder de straat in of zet een stip.' : 'Controleer goed; ligt hij verkeerd, vul dan de straat in, zet een stip of kies Handmatig plaatsen.'}</em>
             </div>${streetForm(opts.street)}`;
           body.querySelector('#planManual').hidden = false;
         })
